@@ -116,6 +116,12 @@ function validatePayload(payload) {
     }
     seen.add(id);
   }
+  const missingIds = TARGET_TAVERN_SCRIPTS.map(item => item.id).filter(id => !seen.has(id));
+  if (missingIds.length > 0 || seen.size !== TARGET_TAVERN_SCRIPTS.length) {
+    throw new TypeError(
+      `Tavern Helper scripts snapshot is incomplete; recapture on a source device with all guarded scripts present (missing ${missingIds.length})`,
+    );
+  }
 }
 
 function findConflicts(trees, payload) {

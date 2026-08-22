@@ -16,10 +16,19 @@ export function createBrowserHost({
   localStorage,
   pluginVersions,
   saveSettingsDebounced,
+  saveSettingsImmediate = null,
   tavernHelperProvider = () => globalThis.TavernHelper,
   indexedDB = globalThis.indexedDB,
   IDBKeyRange = globalThis.IDBKeyRange,
 }) {
+  const persistSettings = async () => {
+    if (typeof saveSettingsImmediate === 'function') {
+      await saveSettingsImmediate();
+      return;
+    }
+    saveSettingsDebounced();
+  };
+
   const tavernHelperScripts = {
     get() {
       const helper = tavernHelperProvider?.();
@@ -31,13 +40,18 @@ export function createBrowserHost({
         ? { available: true, trees: clone(trees) }
         : { available: false, trees: [] };
     },
-    replace(trees) {
+    async replace(trees) {
       const helper = tavernHelperProvider?.();
       if (typeof helper?.getScriptTrees !== 'function' || typeof helper?.replaceScriptTrees !== 'function') {
-        return { available: false };
+        return { available: false, trees: [] };
       }
       helper.replaceScriptTrees(clone(trees), { type: 'global' });
-      return { available: true };
+      await Promise.resolve();
+      await persistSettings();
+      const verified = helper.getScriptTrees({ type: 'global' });
+      return Array.isArray(verified)
+        ? { available: true, trees: clone(verified) }
+        : { available: false, trees: [] };
     },
   };
 
@@ -71,7 +85,7 @@ export function createBrowserHost({
       return flattenScripts(trees).some(script => script?.id === scriptId);
     },
     async saveSettings() {
-      saveSettingsDebounced();
+      await persistSettings();
     },
   };
 }

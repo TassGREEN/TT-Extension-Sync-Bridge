@@ -61,6 +61,31 @@ function collectLocations(trees) {
   return locations;
 }
 
+function structuralProbe(trees) {
+  const entries = Array.isArray(trees) ? trees : [];
+  let rootScriptCount = 0;
+  let folderCount = 0;
+  let folderScriptCount = 0;
+  let unsupportedEntryCount = 0;
+  for (const entry of entries) {
+    if (entry?.type === 'script') {
+      rootScriptCount += 1;
+    } else if (entry?.type === 'folder' && Array.isArray(entry.scripts)) {
+      folderCount += 1;
+      folderScriptCount += entry.scripts.filter(record => record?.type === 'script').length;
+    } else {
+      unsupportedEntryCount += 1;
+    }
+  }
+  return {
+    rootEntryCount: entries.length,
+    rootScriptCount,
+    folderCount,
+    folderScriptCount,
+    unsupportedEntryCount,
+  };
+}
+
 function hasLikelyEmbeddedCredential(content) {
   return typeof content === 'string' && EMBEDDED_CREDENTIAL_PATTERNS.some(pattern => pattern.test(content));
 }
@@ -146,6 +171,22 @@ export const tavernHelperScriptsAdapter = {
   id: 'tavern-helper-global-scripts',
   label: '酒馆助手全局脚本',
   version: 1,
+
+  async diagnose(host) {
+    const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
+    const pluginVersion = host.pluginVersion(PLUGIN_ID);
+    const trees = getTrees(settings);
+    const foundIds = new Set(collectLocations(trees).map(location => location.record.id));
+    return {
+      pluginVersion,
+      pluginVersionSupported: supported(pluginVersion),
+      settingsPresent: isPlainObject(settings),
+      scriptTreePresent: Array.isArray(trees),
+      tree: structuralProbe(trees),
+      foundTargetIds: TARGET_TAVERN_SCRIPTS.map(item => item.id).filter(id => foundIds.has(id)),
+      missingTargetIds: TARGET_TAVERN_SCRIPTS.map(item => item.id).filter(id => !foundIds.has(id)),
+    };
+  },
 
   async capture(host, { includeSensitive = false } = {}) {
     const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);

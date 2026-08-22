@@ -132,3 +132,27 @@ test('script capture defers an incomplete target set instead of publishing a par
   assert.equal(result.payload, null);
   assert.deepEqual(result.diagnostics.missingScriptIds, [API_SCRIPT.id, DREAM_SCRIPT.id]);
 });
+
+test('script adapter exposes a content-free structural probe for mobile diagnostics', async () => {
+  const host = hostWithScripts([
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'must-not-appear-in-diagnostics'),
+    { type: 'mobile-unknown-node', id: 'shape-only' },
+  ]);
+
+  const probe = await tavernHelperScriptsAdapter.diagnose(host);
+  const serialized = JSON.stringify(probe);
+
+  assert.equal(probe.pluginVersion, '4.8.12');
+  assert.equal(probe.settingsPresent, true);
+  assert.equal(probe.scriptTreePresent, true);
+  assert.deepEqual(probe.tree, {
+    rootEntryCount: 2,
+    rootScriptCount: 1,
+    folderCount: 0,
+    folderScriptCount: 0,
+    unsupportedEntryCount: 1,
+  });
+  assert.deepEqual(probe.foundTargetIds, [DATABASE_SCRIPT.id]);
+  assert.deepEqual(probe.missingTargetIds, [API_SCRIPT.id, DREAM_SCRIPT.id]);
+  assert.equal(serialized.includes('must-not-appear-in-diagnostics'), false);
+});

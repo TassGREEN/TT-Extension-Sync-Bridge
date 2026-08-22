@@ -32,6 +32,17 @@ function downloadJson(filename, value) {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+async function copyText(value, textarea) {
+  try {
+    await navigator.clipboard.writeText(value);
+    return true;
+  } catch {
+    textarea.focus();
+    textarea.select();
+    return document.execCommand('copy');
+  }
+}
+
 export function mountBridgeSettingsPanel(runtime) {
   const existing = document.querySelector('#tt-extension-sync-bridge-settings');
   if (existing) return { root: existing, refreshStatus: async () => {} };
@@ -43,7 +54,7 @@ export function mountBridgeSettingsPanel(runtime) {
   root.innerHTML = `
     <div class="inline-drawer">
       <div class="inline-drawer-toggle inline-drawer-header">
-        <b>TT Extension Sync Bridge</b>
+        <b>TT Extension Sync Bridge <span data-bridge-version></span></b>
         <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
       </div>
       <div class="inline-drawer-content">
@@ -62,8 +73,10 @@ export function mountBridgeSettingsPanel(runtime) {
           <button type="button" class="menu_button" data-action="preview">从同步快照恢复前预览</button>
           <button type="button" class="menu_button" data-action="restore" disabled>确认并恢复</button>
           <button type="button" class="menu_button" data-action="diagnostics">导出脱敏诊断</button>
+          <button type="button" class="menu_button" data-action="copy-diagnostics">生成并复制诊断日志</button>
         </div>
         <div class="ttsb-summary" role="status"></div>
+        <textarea class="ttsb-diagnostics-log" data-diagnostics-log rows="14" readonly spellcheck="false" hidden></textarea>
         <div class="ttsb-status-list"></div>
       </div>
     </div>`;
@@ -74,7 +87,9 @@ export function mountBridgeSettingsPanel(runtime) {
   const restoreButton = root.querySelector('[data-action="restore"]');
   const sensitiveToggle = root.querySelector('[data-setting="sensitiveDataSync"]');
   const sensitivePassphrase = root.querySelector('[data-setting="sensitivePassphrase"]');
+  const diagnosticsLog = root.querySelector('[data-diagnostics-log]');
   let previews = null;
+  root.querySelector('[data-bridge-version]').textContent = `v${runtime.bridgeVersion ?? 'unknown'}`;
   sensitivePassphrase.value = runtime.passphrases.get();
 
   for (const adapter of runtime.controller.listAdapters()) {
@@ -120,6 +135,21 @@ export function mountBridgeSettingsPanel(runtime) {
       output.push(...await runtime.controller.captureAll([adapterId], { includeSensitive, sensitiveCodec: codec }));
     }
     return output;
+  }
+
+  async function createDiagnostics() {
+    const adapterProbes = {};
+    await Promise.all(runtime.controller.listAdapters().map(async adapter => {
+      adapterProbes[adapter.id] = await runtime.controller.diagnoseAdapter(adapter.id).catch(() => null);
+    }));
+    return buildDiagnostics({
+      adapters: runtime.controller.listAdapters(),
+      snapshotStore: runtime.snapshotStore,
+      localState: runtime.localState,
+      pluginVersions: runtime.pluginVersions,
+      adapterProbes,
+      bridgeVersion: runtime.bridgeVersion,
+    });
   }
 
   async function refreshStatus() {
@@ -284,14 +314,20 @@ export function mountBridgeSettingsPanel(runtime) {
   });
 
   root.querySelector('[data-action="diagnostics"]').addEventListener('click', async () => {
-    const diagnostics = await buildDiagnostics({
-      adapters: runtime.controller.listAdapters(),
-      snapshotStore: runtime.snapshotStore,
-      localState: runtime.localState,
-      pluginVersions: runtime.pluginVersions,
-    });
+    const diagnostics = await createDiagnostics();
     downloadJson(`tt-extension-sync-bridge-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`, diagnostics);
     summary.textContent = '脱敏诊断已导出；其中不含快照 payload、聊天或凭据值。';
+  });
+
+  root.querySelector('[data-action="copy-diagnostics"]').addEventListener('click', async () => {
+    const diagnostics = await busy('正在生成实时脱敏诊断…', () => createDiagnostics());
+    const serialized = JSON.stringify(diagnostics, null, 2);
+    diagnosticsLog.value = serialized;
+    diagnosticsLog.hidden = false;
+    const copied = await copyText(serialized, diagnosticsLog);
+    summary.textContent = copied
+      ? '脱敏诊断日志已显示并复制，可直接发给我。'
+      : '脱敏诊断日志已显示；请长按文本框全选复制后发给我。';
   });
 
   settingsContainer.append(root);

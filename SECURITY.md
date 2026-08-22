@@ -35,7 +35,7 @@ v0.1.0 遗留的梦境创客索引 URL 修复只根据设置内已有 binding ID
 
 ## 诊断导出
 
-诊断文件只含 adapter 状态、版本、时间和哈希，不含 snapshot payload。错误文本会再次清理 credential-like 字符串和 URL。分享诊断前仍建议人工检查。
+诊断文件/可复制日志只含 adapter 状态、版本、时间、哈希，以及酒馆助手脚本树结构计数和三个公开固定目标 ID 的 found/missing 结果，不含 snapshot payload 或脚本正文。错误文本会再次清理 credential-like 字符串和 URL，探针字段使用固定白名单，未知字段不会导出。分享诊断前仍建议人工检查。
 
 ## 已知限制
 

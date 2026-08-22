@@ -24,6 +24,7 @@ const adapters = [
   dreamCardAgentAdapter,
   stChatu8Adapter,
 ];
+const BRIDGE_VERSION = '0.2.2';
 
 async function start() {
   const tauriHost = globalThis.__TAURITAVERN__;
@@ -55,7 +56,15 @@ async function start() {
     host,
     deviceId: localState.deviceId,
   });
-  const runtime = { controller, snapshotStore, localState, preferences, passphrases, pluginVersions };
+  const runtime = {
+    controller,
+    snapshotStore,
+    localState,
+    preferences,
+    passphrases,
+    pluginVersions,
+    bridgeVersion: BRIDGE_VERSION,
+  };
   globalThis.TTExtensionSyncBridge = Object.freeze({
     capture: (adapterId, options) => controller.capture(adapterId, options),
     previewRestore: (adapterId, options) => controller.previewRestore(adapterId, options),

@@ -34,6 +34,11 @@ export class BridgeController {
     return [...this.adapters.values()];
   }
 
+  async diagnoseAdapter(adapterId) {
+    const adapter = this.getAdapter(adapterId);
+    return typeof adapter.diagnose === 'function' ? adapter.diagnose(this.host) : null;
+  }
+
   async capture(adapterId, { includeSensitive = false, sensitiveCodec } = {}) {
     const adapter = this.getAdapter(adapterId);
     const captured = await adapter.capture(this.host, { includeSensitive, sensitiveCodec });

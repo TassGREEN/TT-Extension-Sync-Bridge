@@ -12,6 +12,34 @@ function sanitizeError(error) {
   return { message: redactText(String(error.message ?? 'Unknown error')) };
 }
 
+function stringArray(value) {
+  return Array.isArray(value) ? value.filter(item => typeof item === 'string').map(redactText) : [];
+}
+
+function sanitizeProbe(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const tree = value.tree && typeof value.tree === 'object' && !Array.isArray(value.tree)
+    ? {
+        rootEntryCount: Number.isInteger(value.tree.rootEntryCount) ? value.tree.rootEntryCount : null,
+        rootScriptCount: Number.isInteger(value.tree.rootScriptCount) ? value.tree.rootScriptCount : null,
+        folderCount: Number.isInteger(value.tree.folderCount) ? value.tree.folderCount : null,
+        folderScriptCount: Number.isInteger(value.tree.folderScriptCount) ? value.tree.folderScriptCount : null,
+        unsupportedEntryCount: Number.isInteger(value.tree.unsupportedEntryCount)
+          ? value.tree.unsupportedEntryCount
+          : null,
+      }
+    : null;
+  return {
+    pluginVersion: typeof value.pluginVersion === 'string' ? redactText(value.pluginVersion) : null,
+    pluginVersionSupported: value.pluginVersionSupported === true,
+    settingsPresent: value.settingsPresent === true,
+    scriptTreePresent: value.scriptTreePresent === true,
+    tree,
+    foundTargetIds: stringArray(value.foundTargetIds),
+    missingTargetIds: stringArray(value.missingTargetIds),
+  };
+}
+
 function localSummary(state) {
   return {
     lastCapturedHash: state.lastCapturedHash ?? null,
@@ -22,6 +50,8 @@ function localSummary(state) {
     lastAppliedAt: state.lastAppliedAt ?? null,
     lastCheckedAt: state.lastCheckedAt ?? null,
     lastResult: state.lastResult?.status ?? null,
+    reason: typeof state.lastResult?.reason === 'string' ? redactText(state.lastResult.reason) : null,
+    missingScriptIds: stringArray(state.lastResult?.diagnostics?.missingScriptIds),
     conflict: state.conflict
       ? { reason: state.conflict.reason ?? 'unknown', count: state.conflict.conflicts?.length ?? 0 }
       : null,
@@ -34,6 +64,8 @@ export async function buildDiagnostics({
   snapshotStore,
   localState,
   pluginVersions = {},
+  adapterProbes = {},
+  bridgeVersion = null,
   generatedAt = new Date().toISOString(),
 }) {
   const adapterDiagnostics = [];
@@ -61,10 +93,12 @@ export async function buildDiagnostics({
       } : null,
       snapshotError,
       local: localSummary(localState.getAdapterState(adapter.id)),
+      probe: sanitizeProbe(adapterProbes[adapter.id]),
     });
   }
   return {
-    schema: 'tt-extension-sync-bridge-diagnostics/v1',
+    schema: 'tt-extension-sync-bridge-diagnostics/v2',
+    bridgeVersion: typeof bridgeVersion === 'string' ? redactText(bridgeVersion) : null,
     generatedAt,
     pluginVersions: { ...pluginVersions },
     adapters: adapterDiagnostics,

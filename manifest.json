@@ -6,6 +6,6 @@
   "js": "index.js",
   "css": "style.css",
   "author": "TassGREEN",
-  "version": "0.1.0",
-  "description": "Synchronizes redacted third-party extension settings through TauriTavern Extension Store."
+  "version": "0.2.0",
+  "description": "Synchronizes guarded third-party extension settings through TauriTavern Extension Store."
 }

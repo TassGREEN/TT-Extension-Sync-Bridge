@@ -13,6 +13,22 @@
   opacity: 0.6;
 }
 
+.tt-sync-bridge .ttsb-sensitive-box {
+  display: grid;
+  gap: 0.35rem;
+  padding: 0.6rem;
+  border: 1px solid var(--SmartThemeBorderColor);
+  border-radius: 0.5rem;
+}
+
+.tt-sync-bridge .ttsb-sensitive-box input[type="password"] {
+  width: 100%;
+}
+
+.tt-sync-bridge .ttsb-sensitive-box small {
+  opacity: 0.78;
+}
+
 .tt-sync-bridge .ttsb-adapters {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
@@ -57,6 +73,10 @@
 .tt-sync-bridge .ttsb-status-failed,
 .tt-sync-bridge .ttsb-status-incompatible {
   border-color: #c96d6d;
+}
+
+.tt-sync-bridge .ttsb-status-locked {
+  border-color: #d2a84f;
 }
 
 .tt-sync-bridge.ttsb-busy {

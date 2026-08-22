@@ -89,7 +89,11 @@ test('script restore replaces matching IDs in place and is idempotent', async ()
 });
 
 test('script restore reports same-name different-ID conflicts without writing', async () => {
-  const source = hostWithScripts([script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db')]);
+  const source = hostWithScripts([
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
+    script(API_SCRIPT.id, API_SCRIPT.name, 'source-api'),
+    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'source-dream'),
+  ]);
   const captured = await tavernHelperScriptsAdapter.capture(source);
   const target = hostWithScripts([script('different-id', DATABASE_SCRIPT.name, 'target-db')]);
 
@@ -108,8 +112,21 @@ test('script restore reports same-name different-ID conflicts without writing', 
 
 test('script capture rejects likely embedded credentials without reporting the value', async () => {
   const host = hostWithScripts([
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'console.log("db")'),
     script(API_SCRIPT.id, API_SCRIPT.name, 'const apiKey = "sk-abcdefghijklmnopqrstuvwxyz";'),
+    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'console.log("dream")'),
   ]);
 
   await assert.rejects(() => tavernHelperScriptsAdapter.capture(host), /embedded credential.*API管理器/i);
+});
+
+test('script capture refuses an incomplete target set instead of replacing a complete snapshot', async () => {
+  const host = hostWithScripts([
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'console.log("db")'),
+  ]);
+
+  await assert.rejects(
+    () => tavernHelperScriptsAdapter.capture(host),
+    /target scripts are not fully initialized/i,
+  );
 });

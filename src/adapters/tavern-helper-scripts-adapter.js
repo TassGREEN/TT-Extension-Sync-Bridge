@@ -159,6 +159,9 @@ export const tavernHelperScriptsAdapter = {
       });
       records.push({ record: redacted.value, path: found.path });
     }
+    if (missingScriptIds.length > 0) {
+      throw new Error('Tavern Helper target scripts are not fully initialized; capture refused');
+    }
     const payload = { dataVersion: 1, pluginVersion, records };
     validatePayload(payload);
     return {

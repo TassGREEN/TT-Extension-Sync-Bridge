@@ -51,8 +51,8 @@ async function start() {
   });
   const runtime = { controller, snapshotStore, localState, preferences, pluginVersions };
   globalThis.TTExtensionSyncBridge = Object.freeze({
-    capture: adapterId => controller.capture(adapterId, { includeSensitive: false }),
-    previewRestore: adapterId => controller.previewRestore(adapterId),
+    capture: (adapterId, options) => controller.capture(adapterId, options),
+    previewRestore: (adapterId, options) => controller.previewRestore(adapterId, options),
     restore: (adapterId, options) => controller.restore(adapterId, options),
     listAdapters: () => controller.listAdapters().map(adapter => ({ id: adapter.id, label: adapter.label })),
   });
@@ -89,7 +89,7 @@ async function start() {
     if (value.autoCapture) {
       const blocked = new Set(
         postLoadResults
-          .filter(result => ['deferred', 'conflict', 'incompatible', 'failed'].includes(result.status))
+          .filter(result => ['deferred', 'locked', 'conflict', 'incompatible', 'failed'].includes(result.status))
           .map(result => result.adapterId),
       );
       await controller.captureAll(enabledAdapterIds().filter(adapterId => !blocked.has(adapterId)), {

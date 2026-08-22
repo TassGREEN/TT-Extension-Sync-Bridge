@@ -34,9 +34,9 @@ export class BridgeController {
     return [...this.adapters.values()];
   }
 
-  async capture(adapterId, { includeSensitive = false } = {}) {
+  async capture(adapterId, { includeSensitive = false, sensitiveCodec } = {}) {
     const adapter = this.getAdapter(adapterId);
-    const captured = await adapter.capture(this.host, { includeSensitive });
+    const captured = await adapter.capture(this.host, { includeSensitive, sensitiveCodec });
     if (!captured.available) {
       const result = { status: 'missing-target', adapterId, diagnostics: captured.diagnostics };
       this.localState.setAdapterState(adapterId, { lastResult: result, lastCheckedAt: this.now() });
@@ -46,6 +46,9 @@ export class BridgeController {
     const previous = await this.snapshotStore.getSnapshot(adapterId);
     if (previous !== null) {
       await verifySnapshot(previous, { adapterId, adapterVersion: adapter.version });
+      if (previous.sensitiveDataIncluded && !includeSensitive) {
+        throw new Error('Refusing to replace an encrypted snapshot without sensitive sync enabled');
+      }
     }
     const nextRevision = previous === null ? 1 : previous.sourceRevision + 1;
     const snapshot = await createSnapshot({
@@ -80,18 +83,18 @@ export class BridgeController {
     return { status: 'captured', adapterId, snapshot, diagnostics: captured.diagnostics };
   }
 
-  async previewRestore(adapterId) {
+  async previewRestore(adapterId, { sensitiveCodec } = {}) {
     const adapter = this.getAdapter(adapterId);
     const snapshot = await this.snapshotStore.getSnapshot(adapterId);
     if (snapshot === null) return { status: 'no-snapshot', adapterId };
     await verifySnapshot(snapshot, { adapterId, adapterVersion: adapter.version });
     const adapterPayload = await payloadForSnapshot(adapter, snapshot);
 
-    const adapterPreview = await adapter.preview(this.host, adapterPayload);
+    const adapterPreview = await adapter.preview(this.host, adapterPayload, { sensitiveCodec });
     if (adapterPreview.status === 'conflict') {
       return { ...adapterPreview, adapterId, snapshot, adapterPayload, hardConflict: true };
     }
-    if (['missing-target', 'incompatible', 'deferred'].includes(adapterPreview.status)) {
+    if (['missing-target', 'incompatible', 'deferred', 'locked'].includes(adapterPreview.status)) {
       return { ...adapterPreview, adapterId, snapshot, adapterPayload };
     }
     if (adapterPreview.status === 'empty-target') {
@@ -127,8 +130,8 @@ export class BridgeController {
     return { status: 'would-change', adapterId, snapshot, adapterPayload, currentHash };
   }
 
-  async restore(adapterId, { confirmConflict = false } = {}) {
-    const preview = await this.previewRestore(adapterId);
+  async restore(adapterId, { confirmConflict = false, sensitiveCodec } = {}) {
+    const preview = await this.previewRestore(adapterId, { sensitiveCodec });
     if (preview.status === 'noop') {
       this.localState.setAdapterState(adapterId, {
         lastAppliedHash: preview.snapshot.nonSensitiveHash,
@@ -147,13 +150,13 @@ export class BridgeController {
       });
       return preview;
     }
-    if (['no-snapshot', 'missing-target', 'incompatible', 'deferred'].includes(preview.status)) {
+    if (['no-snapshot', 'missing-target', 'incompatible', 'deferred', 'locked'].includes(preview.status)) {
       this.localState.setAdapterState(adapterId, { lastResult: { status: preview.status } });
       return preview;
     }
 
     const adapter = this.getAdapter(adapterId);
-    const result = await adapter.restore(this.host, preview.adapterPayload);
+    const result = await adapter.restore(this.host, preview.adapterPayload, { sensitiveCodec });
     if (result.status === 'applied' || result.status === 'noop') {
       this.localState.setAdapterState(adapterId, {
         lastAppliedHash: preview.snapshot.nonSensitiveHash,
@@ -185,11 +188,11 @@ export class BridgeController {
     return results;
   }
 
-  async restoreAll(adapterIds, { automatic = false } = {}) {
+  async restoreAll(adapterIds, { automatic = false, sensitiveCodec } = {}) {
     const results = [];
     for (const adapterId of adapterIds) {
       try {
-        results.push(await this.restore(adapterId, { confirmConflict: false, automatic }));
+        results.push(await this.restore(adapterId, { confirmConflict: false, automatic, sensitiveCodec }));
       } catch (error) {
         this.localState.setAdapterState(adapterId, {
           lastResult: { status: 'failed' },

@@ -12,8 +12,14 @@ import {
   tavernHelperScriptsAdapter,
 } from '../src/adapters/tavern-helper-scripts-adapter.js';
 import { BridgeController } from '../src/core/bridge-controller.js';
+import {
+  DREAM_SCRIPT_ID,
+  DREAM_SETTINGS_KEY,
+  dreamCardAgentAdapter,
+} from '../src/adapters/dream-card-agent-adapter.js';
 import { createSnapshot } from '../src/core/snapshot.js';
 import { redactedValue } from '../src/core/redaction.js';
+import { createPassphraseSensitiveCodec } from '../src/core/sensitive-envelope.js';
 import { createMemoryHost } from './helpers/memory-host.js';
 
 class MemorySnapshotStore {
@@ -128,20 +134,20 @@ test('restore rejects a tampered synchronized snapshot before adapter writes', a
 });
 
 test('clean-device restore initializes scripts first and then their settings without confirmation', async () => {
-  const databaseScript = {
+  const targetScripts = TARGET_TAVERN_SCRIPTS.map((script, index) => ({
     type: 'script',
     enabled: true,
-    id: TARGET_TAVERN_SCRIPTS[0].id,
-    name: TARGET_TAVERN_SCRIPTS[0].name,
-    content: 'console.log("database")',
+    id: script.id,
+    name: script.name,
+    content: `console.log("target-${index}")`,
     info: '',
     button: { enabled: true, buttons: [] },
     data: {},
     export_with: { data: true, button: true },
-  };
+  }));
   const source = createMemoryHost({
     extensionSettings: {
-      [TAVERN_HELPER_SETTINGS_KEY]: { script: { scripts: [databaseScript] } },
+      [TAVERN_HELPER_SETTINGS_KEY]: { script: { scripts: targetScripts } },
       ...nestedDatabaseSettings(databaseSettings(true)),
     },
     pluginVersions: { 'third-party/JS-Slash-Runner': '4.8.12' },
@@ -347,4 +353,77 @@ test('automatic restore defers until an adapter dependency exists, then safely i
   ready = true;
   assert.equal((await controller.restore(adapter.id)).status, 'applied');
   assert.equal(writes, 1);
+});
+
+test('controller stores encrypted Dream providers, locks without a passphrase, and restores with one', async () => {
+  const sourceSecret = 'dream-provider-encrypted-payload';
+  const sourceUrl = 'https://private-provider.example/v1';
+  const passphrase = 'same passphrase on both devices';
+  const codec = createPassphraseSensitiveCodec(passphrase);
+  const source = createMemoryHost({
+    extensionSettings: {
+      [DREAM_SETTINGS_KEY]: {
+        version: 4,
+        providers: [{
+          id: 'provider-1',
+          name: 'Provider',
+          baseURL: sourceUrl,
+          models: [],
+          secrets: { version: 1, ciphertext: sourceSecret },
+        }],
+      },
+    },
+  });
+  const store = new MemorySnapshotStore();
+  const sourceController = new BridgeController({
+    adapters: [dreamCardAgentAdapter],
+    snapshotStore: store,
+    localState: new MemoryLocalState(),
+    host: source,
+    deviceId: 'source-device',
+  });
+
+  const captured = await sourceController.capture(dreamCardAgentAdapter.id, {
+    includeSensitive: true,
+    sensitiveCodec: codec,
+  });
+  const repeated = await sourceController.capture(dreamCardAgentAdapter.id, {
+    includeSensitive: true,
+    sensitiveCodec: codec,
+  });
+  assert.equal(captured.snapshot.sensitiveDataIncluded, true);
+  assert.equal(repeated.status, 'unchanged');
+  assert.equal(JSON.stringify(captured.snapshot).includes(sourceSecret), false);
+  assert.equal(JSON.stringify(captured.snapshot).includes(sourceUrl), false);
+  await assert.rejects(
+    () => sourceController.capture(dreamCardAgentAdapter.id),
+    /refusing to replace an encrypted snapshot/i,
+  );
+  assert.equal(store.putCount, 1);
+
+  const target = createMemoryHost();
+  target.hasTavernScript = id => id === DREAM_SCRIPT_ID;
+  const targetController = new BridgeController({
+    adapters: [dreamCardAgentAdapter],
+    snapshotStore: store,
+    localState: new MemoryLocalState(),
+    host: target,
+    deviceId: 'target-device',
+  });
+
+  assert.equal((await targetController.previewRestore(dreamCardAgentAdapter.id)).status, 'locked');
+  assert.equal((await targetController.restore(dreamCardAgentAdapter.id)).status, 'locked');
+  assert.equal(target.inspect().saveCount, 0);
+  await assert.rejects(
+    () => targetController.restore(dreamCardAgentAdapter.id, {
+      sensitiveCodec: createPassphraseSensitiveCodec('incorrect passphrase'),
+    }),
+    /unable to decrypt sensitive data/i,
+  );
+  assert.equal(target.inspect().saveCount, 0);
+
+  const restored = await targetController.restore(dreamCardAgentAdapter.id, { sensitiveCodec: codec });
+  assert.equal(restored.status, 'applied');
+  assert.equal(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].providers[0].baseURL, sourceUrl);
+  assert.equal(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].providers[0].secrets.ciphertext, sourceSecret);
 });

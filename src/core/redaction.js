@@ -1,3 +1,5 @@
+import { isEncryptedEnvelope } from './sensitive-envelope.js';
+
 const REDACTED_MARKER = 'redacted-v1';
 const OMIT = Symbol('omit-redacted-without-local-value');
 
@@ -18,6 +20,9 @@ export function isRedacted(value) {
 export function stripRedacted(value) {
   function strip(current) {
     if (isRedacted(current)) return OMIT;
+    if (isEncryptedEnvelope(current)) {
+      return { $ttSyncBridge: current.$ttSyncBridge, fingerprint: current.fingerprint };
+    }
     if (current === null || typeof current !== 'object') return current;
     if (Array.isArray(current)) {
       return current.flatMap(item => {

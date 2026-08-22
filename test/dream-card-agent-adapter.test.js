@@ -7,6 +7,7 @@ import {
   dreamCardAgentAdapter,
 } from '../src/adapters/dream-card-agent-adapter.js';
 import { isRedacted } from '../src/core/redaction.js';
+import { createPassphraseSensitiveCodec } from '../src/core/sensitive-envelope.js';
 import { createMemoryHost } from './helpers/memory-host.js';
 
 function dreamSettings(overrides = {}) {
@@ -113,4 +114,169 @@ test('dream creator initializes a clean device when its stable script ID exists'
   assert.equal((await dreamCardAgentAdapter.restore(target, captured.payload)).status, 'applied');
   assert.equal(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].version, 4);
   assert.equal(Object.hasOwn(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].providers[0], 'apiKey'), false);
+});
+
+test('dream creator does not restore a provider whose required secrets are unavailable on a clean device', async () => {
+  const source = createMemoryHost({
+    extensionSettings: {
+      [DREAM_SETTINGS_KEY]: dreamSettings({
+        providers: [{
+          id: 'provider-1',
+          name: 'Private provider',
+          baseURL: 'https://source.private/v1',
+          enabled: true,
+          interfaceType: 'openai-chat',
+          models: [],
+          secrets: {
+            algorithm: 'AES-GCM',
+            ciphertext: 'synthetic-ciphertext',
+            iterations: 150000,
+            iv: 'synthetic-iv',
+            salt: 'synthetic-salt',
+            version: 1,
+          },
+        }],
+      }),
+    },
+  });
+  const captured = await dreamCardAgentAdapter.capture(source);
+  const target = createMemoryHost();
+  target.hasTavernScript = id => id === DREAM_SCRIPT_ID;
+
+  assert.equal((await dreamCardAgentAdapter.restore(target, captured.payload)).status, 'applied');
+  assert.deepEqual(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].providers, []);
+});
+
+test('dream creator keeps TT file references while still redacting provider URLs', async () => {
+  const source = createMemoryHost({
+    extensionSettings: {
+      [DREAM_SETTINGS_KEY]: dreamSettings({
+        characterStores: {
+          'binding-1': {
+            bindingId: 'binding-1',
+            revision: 1,
+            sha256: 'meta-hash',
+            size: 735,
+            updatedAt: 1,
+            url: '/user/files/DreamCreator--Meta--binding-1.json',
+          },
+        },
+        files: {
+          'workspace-1': {
+            bindingId: 'binding-1',
+            createdAt: 1,
+            name: 'workspace.bin',
+            size: 42,
+            url: '/user/files/DreamCreator--Blob--binding-1--workspace-1.bin',
+          },
+        },
+      }),
+    },
+  });
+
+  const result = await dreamCardAgentAdapter.capture(source);
+
+  assert.equal(
+    result.payload.settings.characterStores['binding-1'].url,
+    '/user/files/DreamCreator--Meta--binding-1.json',
+  );
+  assert.equal(
+    result.payload.settings.files['workspace-1'].url,
+    '/user/files/DreamCreator--Blob--binding-1--workspace-1.bin',
+  );
+  assert.equal(isRedacted(result.payload.settings.providers[0].baseUrl), true);
+});
+
+test('dream creator encrypts provider credentials and restores them only with the passphrase', async () => {
+  const passphrase = 'portable bridge passphrase';
+  const sourceSettings = dreamSettings({
+    providers: [{
+      id: 'provider-1',
+      name: 'Private provider',
+      baseURL: 'https://source.private/v1',
+      enabled: true,
+      interfaceType: 'openai-chat',
+      models: [{ id: 'model-1', name: 'Model', requestSecrets: { header: 'model-secret' } }],
+      secrets: {
+        algorithm: 'AES-GCM',
+        ciphertext: 'dream-owned-secret-payload',
+        iterations: 150000,
+        iv: 'dream-owned-iv',
+        salt: 'dream-owned-salt',
+        version: 1,
+      },
+    }],
+  });
+  const codec = createPassphraseSensitiveCodec(passphrase);
+  const source = createMemoryHost({ extensionSettings: { [DREAM_SETTINGS_KEY]: sourceSettings } });
+
+  const captured = await dreamCardAgentAdapter.capture(source, { includeSensitive: true, sensitiveCodec: codec });
+  const serialized = JSON.stringify(captured.payload);
+
+  assert.equal(captured.payload.dataVersion, 2);
+  assert.equal(captured.payload.encryptedProviders.$ttSyncBridge, 'encrypted-v1');
+  assert.equal(serialized.includes('https://source.private/v1'), false);
+  assert.equal(serialized.includes('dream-owned-secret-payload'), false);
+  assert.equal(serialized.includes('model-secret'), false);
+  assert.equal(serialized.includes(passphrase), false);
+
+  const target = createMemoryHost();
+  target.hasTavernScript = id => id === DREAM_SCRIPT_ID;
+  assert.equal((await dreamCardAgentAdapter.preview(target, captured.payload)).status, 'locked');
+  assert.equal((await dreamCardAgentAdapter.restore(target, captured.payload)).status, 'locked');
+  assert.equal(target.inspect().saveCount, 0);
+
+  assert.equal((await dreamCardAgentAdapter.restore(target, captured.payload, { sensitiveCodec: codec })).status, 'applied');
+  assert.deepEqual(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].providers, sourceSettings.providers);
+});
+
+test('dream creator fails closed when sensitive capture has no encryption codec', async () => {
+  const host = createMemoryHost({ extensionSettings: { [DREAM_SETTINGS_KEY]: dreamSettings() } });
+  await assert.rejects(
+    () => dreamCardAgentAdapter.capture(host, { includeSensitive: true }),
+    /encryption passphrase is required/i,
+  );
+});
+
+test('dream creator repairs only a legacy missing metadata URL without reading session files', async () => {
+  const bindingId = 'character:one';
+  const host = createMemoryHost({
+    extensionSettings: {
+      [DREAM_SETTINGS_KEY]: dreamSettings({
+        characterStores: {
+          [bindingId]: {
+            bindingId,
+            revision: 2,
+            sha256: 'a'.repeat(64),
+            size: 735,
+            updatedAt: 123,
+          },
+        },
+      }),
+    },
+  });
+
+  const captured = await dreamCardAgentAdapter.capture(host);
+  const expectedUrl = '/user/files/DreamCreator--Meta--character_one.json';
+
+  assert.equal(captured.payload.settings.characterStores[bindingId].url, expectedUrl);
+  assert.equal(host.inspect().extensionSettings[DREAM_SETTINGS_KEY].characterStores[bindingId].url, expectedUrl);
+  assert.equal(host.inspect().saveCount, 1);
+  assert.equal(captured.diagnostics.repairedReferenceCount, 1);
+});
+
+test('dream creator does not invent a metadata URL for an incomplete unknown record', async () => {
+  const host = createMemoryHost({
+    extensionSettings: {
+      [DREAM_SETTINGS_KEY]: dreamSettings({
+        characterStores: { unknown: { bindingId: 'unknown' } },
+      }),
+    },
+  });
+
+  const captured = await dreamCardAgentAdapter.capture(host);
+
+  assert.equal(Object.hasOwn(captured.payload.settings.characterStores.unknown, 'url'), false);
+  assert.equal(host.inspect().saveCount, 0);
+  assert.equal(captured.diagnostics.repairedReferenceCount, 0);
 });

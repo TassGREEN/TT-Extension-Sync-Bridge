@@ -1,0 +1,57 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { createBrowserHost, loadPluginVersions } from '../src/host/browser-host.js';
+
+test('browser host exposes settings, persistence, versions, and nested Tavern Helper scripts', async () => {
+  const extensionSettings = {
+    tavern_helper: {
+      script: {
+        scripts: [
+          {
+            type: 'folder',
+            id: 'folder',
+            scripts: [{ type: 'script', id: 'script-in-folder', name: 'Nested' }],
+          },
+        ],
+      },
+    },
+  };
+  const values = new Map();
+  let saved = 0;
+  const host = createBrowserHost({
+    extensionSettings,
+    localStorage: {
+      getItem: key => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+      removeItem: key => values.delete(key),
+    },
+    pluginVersions: { 'third-party/JS-Slash-Runner': '4.8.12' },
+    saveSettingsDebounced: () => { saved += 1; },
+  });
+
+  assert.equal(host.pluginVersion('third-party/JS-Slash-Runner'), '4.8.12');
+  assert.equal(host.hasTavernScript('script-in-folder'), true);
+  assert.equal(host.hasTavernScript('missing'), false);
+  host.extensionSettings.set('example', { enabled: true });
+  assert.deepEqual(host.extensionSettings.get('example'), { enabled: true });
+  host.localStorage.set('key', 'value');
+  assert.equal(host.localStorage.get('key'), 'value');
+  await host.saveSettings();
+  assert.equal(saved, 1);
+});
+
+test('plugin version loader reads only manifest versions and tolerates missing plugins', async () => {
+  const calls = [];
+  const versions = await loadPluginVersions({
+    pluginFolders: ['JS-Slash-Runner', 'missing'],
+    fetchImpl: async url => {
+      calls.push(url);
+      if (url.includes('missing')) return { ok: false, status: 404 };
+      return { ok: true, json: async () => ({ version: '4.8.12', display_name: 'ignored' }) };
+    },
+  });
+
+  assert.deepEqual(versions, { 'third-party/JS-Slash-Runner': '4.8.12' });
+  assert.equal(calls.length, 2);
+});

@@ -59,6 +59,18 @@ function sanitizeRuntimeDiagnostics(value) {
   return { tavernHelperTimeline: timeline };
 }
 
+function snapshotPayloadSummary(adapterId, snapshot) {
+  if (adapterId !== 'tavern-helper-global-scripts') return null;
+  const records = Array.isArray(snapshot?.payload?.records) ? snapshot.payload.records : null;
+  if (records === null) {
+    return { recordCount: null, targetScriptIds: [] };
+  }
+  return {
+    recordCount: records.length,
+    targetScriptIds: stringArray(records.map(item => item?.record?.id)),
+  };
+}
+
 function localSummary(state) {
   return {
     lastCapturedHash: state.lastCapturedHash ?? null,
@@ -110,6 +122,7 @@ export async function buildDiagnostics({
         contentHash: snapshot.contentHash,
         nonSensitiveHash: snapshot.nonSensitiveHash,
         sensitiveDataIncluded: snapshot.sensitiveDataIncluded === true,
+        payloadSummary: snapshotPayloadSummary(adapter.id, snapshot),
       } : null,
       snapshotError,
       local: localSummary(localState.getAdapterState(adapter.id)),

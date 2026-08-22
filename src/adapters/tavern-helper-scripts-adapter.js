@@ -39,6 +39,17 @@ function getTrees(settings) {
   return settings?.script?.scripts;
 }
 
+function readScriptTrees(host, settings) {
+  if (typeof host.tavernHelperScripts?.get === 'function') {
+    const result = host.tavernHelperScripts.get();
+    if (result?.available && Array.isArray(result.trees)) {
+      return { available: true, authoritative: true, trees: result.trees };
+    }
+    return { available: false, authoritative: true, trees: [] };
+  }
+  return { available: true, authoritative: false, trees: getTrees(settings) ?? [] };
+}
+
 function collectLocations(trees) {
   const locations = [];
   if (!Array.isArray(trees)) return locations;
@@ -175,11 +186,13 @@ export const tavernHelperScriptsAdapter = {
   async diagnose(host) {
     const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
     const pluginVersion = host.pluginVersion(PLUGIN_ID);
-    const trees = getTrees(settings);
+    const source = readScriptTrees(host, settings);
+    const trees = source.available ? source.trees : getTrees(settings);
     const foundIds = new Set(collectLocations(trees).map(location => location.record.id));
     return {
       pluginVersion,
       pluginVersionSupported: supported(pluginVersion),
+      authoritativeApiAvailable: source.available && source.authoritative,
       settingsPresent: isPlainObject(settings),
       scriptTreePresent: Array.isArray(trees),
       tree: structuralProbe(trees),
@@ -197,7 +210,18 @@ export const tavernHelperScriptsAdapter = {
     if (!supported(pluginVersion)) {
       throw new Error(`Unsupported Tavern Helper version ${String(pluginVersion)}`);
     }
-    const locations = collectLocations(getTrees(settings));
+    const source = readScriptTrees(host, settings);
+    if (!source.available) {
+      return {
+        available: true,
+        status: 'deferred',
+        reason: 'tavern-helper-script-api-not-ready',
+        sourceVersion: pluginVersion,
+        payload: null,
+        diagnostics: { missingScriptIds: [] },
+      };
+    }
+    const locations = collectLocations(source.trees);
     const records = [];
     const missingScriptIds = [];
     for (const target of TARGET_TAVERN_SCRIPTS) {
@@ -244,7 +268,9 @@ export const tavernHelperScriptsAdapter = {
       return { status: 'incompatible', message: `Target Tavern Helper version ${String(targetVersion)} is not supported` };
     }
     if (!isPlainObject(settings)) return { status: 'empty-target' };
-    const trees = getTrees(settings) ?? [];
+    const source = readScriptTrees(host, settings);
+    if (!source.available) return { status: 'deferred', reason: 'tavern-helper-script-api-not-ready' };
+    const trees = source.trees;
     const conflicts = findConflicts(trees, payload);
     if (conflicts.length > 0) return { status: 'conflict', conflicts };
     const restored = applyRecords(trees, payload.records);
@@ -264,16 +290,23 @@ export const tavernHelperScriptsAdapter = {
       return { status: 'incompatible', message: `Target Tavern Helper version ${String(targetVersion)} is not supported` };
     }
     const currentSettings = isPlainObject(settings) ? settings : {};
-    const trees = getTrees(currentSettings) ?? [];
+    const source = readScriptTrees(host, currentSettings);
+    if (!source.available) return { status: 'deferred', reason: 'tavern-helper-script-api-not-ready' };
+    const trees = source.trees;
     const conflicts = findConflicts(trees, payload);
     if (conflicts.length > 0) return { status: 'conflict', conflicts };
     const restoredTrees = applyRecords(trees, payload.records);
     if (canonicalJson(trees) === canonicalJson(restoredTrees)) return { status: 'noop' };
-    const nextSettings = JSON.parse(JSON.stringify(currentSettings));
-    nextSettings.script ??= {};
-    nextSettings.script.scripts = restoredTrees;
-    host.extensionSettings.set(TAVERN_HELPER_SETTINGS_KEY, nextSettings);
-    await host.saveSettings();
+    if (source.authoritative) {
+      const result = host.tavernHelperScripts.replace(restoredTrees);
+      if (!result?.available) return { status: 'deferred', reason: 'tavern-helper-script-api-not-ready' };
+    } else {
+      const nextSettings = JSON.parse(JSON.stringify(currentSettings));
+      nextSettings.script ??= {};
+      nextSettings.script.scripts = restoredTrees;
+      host.extensionSettings.set(TAVERN_HELPER_SETTINGS_KEY, nextSettings);
+      await host.saveSettings();
+    }
     return { status: 'applied' };
   },
 };

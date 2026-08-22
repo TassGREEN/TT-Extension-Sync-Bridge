@@ -88,6 +88,71 @@ test('script restore replaces matching IDs in place and is idempotent', async ()
   assert.equal(target.inspect().saveCount, 1);
 });
 
+test('script restore writes through Tavern Helper authoritative store so its watcher cannot erase restored scripts', async () => {
+  const source = hostWithScripts([
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
+    script(API_SCRIPT.id, API_SCRIPT.name, 'source-api'),
+    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'source-dream'),
+  ], '4.8.19');
+  const captured = await tavernHelperScriptsAdapter.capture(source);
+  const target = hostWithScripts([
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'mobile-db'),
+  ], '4.8.19');
+  let authoritativeTrees = target.inspect().extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts;
+  let replaceCount = 0;
+  target.tavernHelperScripts = {
+    get() {
+      return { available: true, trees: structuredClone(authoritativeTrees) };
+    },
+    replace(trees) {
+      replaceCount += 1;
+      authoritativeTrees = structuredClone(trees);
+      const settings = target.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
+      settings.script.scripts = structuredClone(trees);
+      target.extensionSettings.set(TAVERN_HELPER_SETTINGS_KEY, settings);
+      return { available: true };
+    },
+  };
+
+  const result = await tavernHelperScriptsAdapter.restore(target, captured.payload);
+  const watcherWrite = target.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
+  watcherWrite.script.scripts = structuredClone(authoritativeTrees);
+  target.extensionSettings.set(TAVERN_HELPER_SETTINGS_KEY, watcherWrite);
+
+  assert.equal(result.status, 'applied');
+  assert.equal(replaceCount, 1);
+  assert.deepEqual(
+    target.inspect().extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts.map(item => item.id),
+    [DATABASE_SCRIPT.id, API_SCRIPT.id, DREAM_SCRIPT.id],
+  );
+});
+
+test('script restore defers without raw settings writes while Tavern Helper public API is not ready', async () => {
+  const source = hostWithScripts([
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
+    script(API_SCRIPT.id, API_SCRIPT.name, 'source-api'),
+    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'source-dream'),
+  ], '4.8.19');
+  const captured = await tavernHelperScriptsAdapter.capture(source);
+  const target = hostWithScripts([
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'mobile-db'),
+  ], '4.8.19');
+  target.tavernHelperScripts = {
+    get: () => ({ available: false, trees: [] }),
+    replace: () => { throw new Error('must not write before API initialization'); },
+  };
+  const before = target.inspect();
+
+  const result = await tavernHelperScriptsAdapter.restore(target, captured.payload);
+
+  assert.deepEqual(result, {
+    status: 'deferred',
+    reason: 'tavern-helper-script-api-not-ready',
+  });
+  assert.deepEqual(target.inspect().extensionSettings, before.extensionSettings);
+  assert.equal(target.inspect().saveCount, 0);
+});
+
 test('script restore reports same-name different-ID conflicts without writing', async () => {
   const source = hostWithScripts([
     script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),

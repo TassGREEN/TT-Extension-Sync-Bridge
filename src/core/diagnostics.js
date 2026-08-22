@@ -32,6 +32,7 @@ function sanitizeProbe(value) {
   return {
     pluginVersion: typeof value.pluginVersion === 'string' ? redactText(value.pluginVersion) : null,
     pluginVersionSupported: value.pluginVersionSupported === true,
+    authoritativeApiAvailable: value.authoritativeApiAvailable === true,
     settingsPresent: value.settingsPresent === true,
     scriptTreePresent: value.scriptTreePresent === true,
     tree,

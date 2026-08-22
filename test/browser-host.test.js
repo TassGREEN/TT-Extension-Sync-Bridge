@@ -41,6 +41,48 @@ test('browser host exposes settings, persistence, versions, and nested Tavern He
   assert.equal(saved, 1);
 });
 
+test('browser host delegates Tavern Helper script reads and writes to its authoritative public API', () => {
+  const extensionSettings = {
+    tavern_helper: { script: { scripts: [{ type: 'script', id: 'stale-script' }] } },
+  };
+  let authoritativeTrees = [{ type: 'script', id: 'authoritative-script' }];
+  const calls = [];
+  const host = createBrowserHost({
+    extensionSettings,
+    localStorage: {
+      getItem: () => null,
+      setItem: () => {},
+      removeItem: () => {},
+    },
+    pluginVersions: { 'third-party/JS-Slash-Runner': '4.8.19' },
+    saveSettingsDebounced: () => {},
+    tavernHelperProvider: () => ({
+      getScriptTrees(option) {
+        calls.push(['get', option]);
+        return authoritativeTrees;
+      },
+      replaceScriptTrees(trees, option) {
+        calls.push(['replace', option]);
+        authoritativeTrees = trees;
+      },
+    }),
+  });
+
+  assert.deepEqual(host.tavernHelperScripts.get(), {
+    available: true,
+    trees: [{ type: 'script', id: 'authoritative-script' }],
+  });
+  host.tavernHelperScripts.replace([{ type: 'script', id: 'restored-script' }]);
+  assert.equal(host.hasTavernScript('restored-script'), true);
+  assert.equal(host.hasTavernScript('stale-script'), false);
+  assert.deepEqual(calls, [
+    ['get', { type: 'global' }],
+    ['replace', { type: 'global' }],
+    ['get', { type: 'global' }],
+    ['get', { type: 'global' }],
+  ]);
+});
+
 test('plugin version loader reads only manifest versions and tolerates missing plugins', async () => {
   const calls = [];
   const versions = await loadPluginVersions({

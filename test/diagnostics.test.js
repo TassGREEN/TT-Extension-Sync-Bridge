@@ -44,6 +44,7 @@ test('exported diagnostics omit payloads and redact credential-like error text',
     adapterProbes: {
       example: {
         pluginVersion: '4.8.12',
+        authoritativeApiAvailable: true,
         settingsPresent: true,
         scriptTreePresent: true,
         tree: {
@@ -75,4 +76,5 @@ test('exported diagnostics omit payloads and redact credential-like error text',
   assert.equal(diagnostics.adapters[0].local.reason, 'target-scripts-not-fully-initialized');
   assert.deepEqual(diagnostics.adapters[0].local.missingScriptIds, ['missing-id']);
   assert.deepEqual(diagnostics.adapters[0].probe.missingTargetIds, ['missing-id']);
+  assert.equal(diagnostics.adapters[0].probe.authoritativeApiAvailable, true);
 });

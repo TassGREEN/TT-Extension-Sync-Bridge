@@ -2,7 +2,7 @@
 
 | Adapter | 来源 | 会同步 | 明确排除 | 版本策略 |
 | --- | --- | --- | --- | --- |
-| 酒馆助手全局脚本 | `extension_settings.tavern_helper.script.scripts` | 三个稳定 ID 的完整脚本记录 | 其他脚本；检测到疑似内嵌凭据时整项拒绝采集 | 酒馆助手 4.x；同名异 ID 为硬冲突 |
+| 酒馆助手全局脚本 | 酒馆助手公共 `getScriptTrees` / `replaceScriptTrees` API（持久化结果仍落入 `extension_settings.tavern_helper.script.scripts`） | 三个稳定 ID 的完整脚本记录 | 其他脚本；检测到疑似内嵌凭据时整项拒绝采集 | 当前实机 4.8.19；公共 API 未就绪时等待；同名异 ID 为硬冲突 |
 | 蚀心入魔·数据库 | `extension_settings.__userscripts.shujuku_v104__userscript_settings_v1` | global meta、默认 profile settings/template、template presets 等用户配置 | `shujuku_v104_windowStates` | adapter payload v1；未知版本拒绝 |
 | API 管理器 2.0.3 | localStorage | `api_configs_manager`、`api_configs_categories`、`api_configs_category_switch_indexes` 的非敏感部分 | collapsed categories、sync metadata、debug modal；Key、Token、URL、账号等敏感字段 | adapter payload v1；JSON 损坏时拒绝采集/恢复 |
 | 梦境创客 | `extension_settings.dream-card-agent` | Provider/Agent、技能、角色存储、TT 文件引用和工作区中的非敏感用户数据；可选口令加密同步完整 `providers`（Base URL、`secrets`、模型 `requestSecrets`） | `floatingButtonOffset`、`syncRevision`；未开启加密时凭据字段 | 插件数据版本 4；adapter payload v2，可显式迁移 v1；其他版本拒绝 |

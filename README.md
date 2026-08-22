@@ -38,7 +38,7 @@ data/extensions/third-party/TT-Extension-Sync-Bridge
 
 目标设备还需要安装酒馆助手和 st-chatu8；数据库、API 管理器和梦境创客三个酒馆助手脚本可以由同步快照恢复，无需单独安装。
 
-重新加载 TT 后，在扩展设置中找到 `TT Extension Sync Bridge`。扩展的 `loading_order` 为 110，会在当前 st-chatu8（9）和酒馆助手（100）完成初始化后运行，避免恢复的全局脚本被酒馆助手的晚到初始化覆盖。首次补齐酒馆助手脚本后建议再重启一次 TT，让新脚本正式执行。
+重新加载 TT 后，在扩展设置中找到 `TT Extension Sync Bridge`。扩展的 `loading_order` 为 110，晚于当前 st-chatu8（9）和酒馆助手（100）。恢复酒馆助手全局脚本时，Bridge 使用酒馆助手 4.8.19 提供的 `getScriptTrees` / `replaceScriptTrees` 公共接口写入其内部权威 store；若该接口尚未就绪则等待，不会直接改 `extension_settings` 并误报成功。首次补齐酒馆助手脚本后建议再重启一次 TT，让新脚本正式执行。
 
 ## 使用
 
@@ -55,7 +55,7 @@ data/extensions/third-party/TT-Extension-Sync-Bridge
 
 v0.2.0 会在采集梦境创客时修复 v0.1.0 曾误删的 `characterStores.*.url`：仅当引用具备完整 binding ID、revision、size 和 SHA-256 且只缺 URL 时，按创客固定文件命名规则补回指针；不会打开会话或索引文件。
 
-手机端若点击采集时酒馆助手三个目标脚本尚未全部初始化，Bridge 会显示“等待插件初始化”，保留已有完整快照，不再误显示为普通失败，也绝不会发布部分脚本快照。若手机已有的部分脚本与完整快照完全一致，自动恢复会安全补齐缺少脚本；已有内容不同则仍要求人工确认。
+手机端若酒馆助手公共脚本接口尚未就绪，或三个目标脚本尚未全部出现，Bridge 会显示“等待插件初始化”，保留已有完整快照，不再误显示为普通失败，也绝不会发布部分脚本快照。若手机已有的部分脚本与完整快照完全一致，自动恢复会通过酒馆助手自身接口安全补齐缺少脚本；已有内容不同则仍要求人工确认。
 
 每份快照同时记录 `contentHash`（完整 payload 完整性）和 `nonSensitiveHash`（忽略脱敏占位符后的跨设备一致性）。冲突判断使用后者，避免两台设备本地凭据字段是否存在造成假冲突。
 

@@ -16,7 +16,7 @@
 | 手机端脚本部分初始化 | 自动化已证明，手机待复测 | controller 公共接口复现旧版 `failed`；现改为 `deferred`，旧完整快照 content hash/revision 保持不变，部分 payload 不发布；现有部分与快照一致时自动补齐，不同时保持冲突 |
 | 本机记住加密口令 | 自动化已证明，实机待复测 | 口令与开关可跨重载保留并可清除；仅写设备 localStorage，不进入 Extension Store；同源脚本可访问的边界已写入 UI/安全文档 |
 | 手机可复制诊断 | 自动化已证明，手机待复测 | 实时探针只报告版本、结构计数和固定目标 ID found/missing；诊断固定白名单丢弃未知字段，不含 payload/正文；UI 提供剪贴板与长按文本框双路径 |
-| 酒馆助手晚初始化覆盖 | 诊断证据确认，修复待手机复测 | 手机日志显示完整快照已应用后约 2.6 秒，API 管理器与梦境创客脚本 ID 再次消失；manifest 契约现要求 Bridge `loading_order > 100`，当前为 110 |
+| 酒馆助手内部 store 覆盖 | 根因与自动化修复已证明，手机待复测 | v0.2.2/v0.2.3 手机日志均显示完整快照先应用、随后 API 管理器与梦境创客 ID 消失；4.8.19 官方源码确认 `extension_settings` 之外另有 Pinia 权威 store，并提供 `getScriptTrees` / `replaceScriptTrees`。v0.2.4 改用该公共接口；回归测试模拟其 watcher 再写回后，三个 ID 仍保留；接口未就绪时零写入并返回 `deferred` |
 | 不读取聊天/摘要/metadata | 已证明到源码边界 | 浏览器入口不导入聊天 API；host 只暴露目标 `extension_settings`、指定 localStorage、manifest 版本与 Extension Store；诊断不含 payload |
 | 完整性、版本、迁移与冲突 | 已证明 | `contentHash` 校验完整 payload；`nonSensitiveHash` 用于跨设备一致性；未知 schema/未来 adapter/不支持插件版本拒绝；旧 adapter 版本无显式迁移即拒绝 |
 | 幂等与缺失插件 | 已证明 | 单 adapter 和完整五-adapter A→B 模拟测试均通过；重复恢复全部 `noop`，脚本数量保持 3；缺失目标返回 `missing-target` |
@@ -28,8 +28,8 @@
 ## 当前自动化结果
 
 ```text
-tests 68
-pass 68
+tests 71
+pass 71
 fail 0
 ```
 

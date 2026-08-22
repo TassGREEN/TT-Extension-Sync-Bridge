@@ -16,9 +16,31 @@ export function createBrowserHost({
   localStorage,
   pluginVersions,
   saveSettingsDebounced,
+  tavernHelperProvider = () => globalThis.TavernHelper,
   indexedDB = globalThis.indexedDB,
   IDBKeyRange = globalThis.IDBKeyRange,
 }) {
+  const tavernHelperScripts = {
+    get() {
+      const helper = tavernHelperProvider?.();
+      if (typeof helper?.getScriptTrees !== 'function' || typeof helper?.replaceScriptTrees !== 'function') {
+        return { available: false, trees: [] };
+      }
+      const trees = helper.getScriptTrees({ type: 'global' });
+      return Array.isArray(trees)
+        ? { available: true, trees: clone(trees) }
+        : { available: false, trees: [] };
+    },
+    replace(trees) {
+      const helper = tavernHelperProvider?.();
+      if (typeof helper?.getScriptTrees !== 'function' || typeof helper?.replaceScriptTrees !== 'function') {
+        return { available: false };
+      }
+      helper.replaceScriptTrees(clone(trees), { type: 'global' });
+      return { available: true };
+    },
+  };
+
   return {
     extensionSettings: {
       get(key) {
@@ -40,8 +62,12 @@ export function createBrowserHost({
     pluginVersion(pluginId) {
       return pluginVersions[pluginId] ?? null;
     },
+    tavernHelperScripts,
     hasTavernScript(scriptId) {
-      const trees = extensionSettings.tavern_helper?.script?.scripts;
+      const authoritative = tavernHelperScripts.get();
+      const trees = authoritative.available
+        ? authoritative.trees
+        : extensionSettings.tavern_helper?.script?.scripts;
       return flattenScripts(trees).some(script => script?.id === scriptId);
     },
     async saveSettings() {

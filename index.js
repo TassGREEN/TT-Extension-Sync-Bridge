@@ -24,8 +24,12 @@ const adapters = [
   dreamCardAgentAdapter,
   stChatu8Adapter,
 ];
-const BRIDGE_VERSION = '0.2.5';
+const BRIDGE_VERSION = '0.2.6';
 const TAVERN_HELPER_RECONCILE_DELAYS = [1500, 4000, 9000];
+const TAVERN_HELPER_OBSERVER_INTERVAL_MS = 2000;
+const TAVERN_HELPER_OBSERVER_DURATION_MS = 120000;
+const TAVERN_HELPER_SETTINGS_UPDATED_SETTLE_MS = 250;
+const TAVERN_HELPER_TIMELINE_LIMIT = 64;
 
 async function start() {
   const tauriHost = globalThis.__TAURITAVERN__;
@@ -58,6 +62,8 @@ async function start() {
     host,
     deviceId: localState.deviceId,
   });
+  const runtimeDiagnostics = { tavernHelperTimeline: [] };
+  globalThis.TTExtensionSyncBridgeRuntimeDiagnostics = runtimeDiagnostics;
   const runtime = {
     controller,
     snapshotStore,
@@ -65,6 +71,7 @@ async function start() {
     preferences,
     passphrases,
     pluginVersions,
+    runtimeDiagnostics,
     bridgeVersion: BRIDGE_VERSION,
   };
   globalThis.TTExtensionSyncBridge = Object.freeze({
@@ -96,30 +103,120 @@ async function start() {
     return results;
   };
 
+  let settingsPanel = null;
+  let tavernHelperReconcileChain = Promise.resolve();
+  let tavernHelperProbeSignature = null;
+  let tavernHelperObserver = null;
+  let tavernHelperObserverBusy = false;
+
+  const appendTavernHelperTimeline = entry => {
+    runtimeDiagnostics.tavernHelperTimeline.push(entry);
+    if (runtimeDiagnostics.tavernHelperTimeline.length > TAVERN_HELPER_TIMELINE_LIMIT) {
+      runtimeDiagnostics.tavernHelperTimeline.splice(
+        0,
+        runtimeDiagnostics.tavernHelperTimeline.length - TAVERN_HELPER_TIMELINE_LIMIT,
+      );
+    }
+  };
+
+  const observeTavernHelper = async (source, { resultStatus = null, onlyOnChange = false } = {}) => {
+    try {
+      const probe = await controller.diagnoseAdapter(tavernHelperScriptsAdapter.id);
+      const foundTargetIds = Array.isArray(probe?.foundTargetIds) ? probe.foundTargetIds : [];
+      const missingTargetIds = Array.isArray(probe?.missingTargetIds) ? probe.missingTargetIds : [];
+      const rootEntryCount = Number.isInteger(probe?.tree?.rootEntryCount) ? probe.tree.rootEntryCount : null;
+      const signature = JSON.stringify({ foundTargetIds, missingTargetIds, rootEntryCount });
+      const changed = signature !== tavernHelperProbeSignature;
+      tavernHelperProbeSignature = signature;
+      if (!onlyOnChange || changed) {
+        appendTavernHelperTimeline({
+          at: new Date().toISOString(),
+          source,
+          resultStatus,
+          foundTargetIds,
+          missingTargetIds,
+          rootEntryCount,
+          error: null,
+        });
+      }
+      return { changed, missingTargetIds };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      appendTavernHelperTimeline({
+        at: new Date().toISOString(),
+        source,
+        resultStatus,
+        foundTargetIds: [],
+        missingTargetIds: [],
+        rootEntryCount: null,
+        error: message,
+      });
+      return { changed: true, missingTargetIds: [] };
+    }
+  };
+
   const reconcileTavernHelper = async source => {
     const value = preferences.get();
     if (!value.masterEnabled || !value.adapters[tavernHelperScriptsAdapter.id]) return;
+    await observeTavernHelper(`${source}:before`, { onlyOnChange: true });
     try {
       const result = await controller.restore(tavernHelperScriptsAdapter.id, {
         confirmConflict: false,
         sensitiveCodec: savedSensitiveCodec(),
       });
+      await observeTavernHelper(`${source}:after`, { resultStatus: result.status });
       if (result.status === 'applied') {
         console.info(`[TT Extension Sync Bridge] Tavern Helper scripts reconciled after ${source}.`);
       }
       await settingsPanel?.refreshStatus();
     } catch (error) {
-      console.warn(
-        `[TT Extension Sync Bridge] Tavern Helper reconciliation after ${source} failed:`,
-        error instanceof Error ? error.message : String(error),
-      );
+      const message = error instanceof Error ? error.message : String(error);
+      appendTavernHelperTimeline({
+        at: new Date().toISOString(),
+        source: `${source}:restore-error`,
+        resultStatus: 'failed',
+        foundTargetIds: [],
+        missingTargetIds: [],
+        rootEntryCount: null,
+        error: message,
+      });
+      console.warn('[TT Extension Sync Bridge] Tavern Helper reconciliation failed:', message);
     }
+  };
+
+  const enqueueTavernHelperReconcile = source => {
+    tavernHelperReconcileChain = tavernHelperReconcileChain
+      .catch(() => undefined)
+      .then(() => reconcileTavernHelper(source));
+    return tavernHelperReconcileChain;
   };
 
   const scheduleTavernHelperReconcile = () => {
     for (const delay of TAVERN_HELPER_RECONCILE_DELAYS) {
-      setTimeout(() => { void reconcileTavernHelper(`${delay}ms stabilization check`); }, delay);
+      setTimeout(() => { void enqueueTavernHelperReconcile(`${delay}ms stabilization check`); }, delay);
     }
+  };
+
+  const startTavernHelperObserver = () => {
+    if (tavernHelperObserver !== null) return;
+    const stopAt = Date.now() + TAVERN_HELPER_OBSERVER_DURATION_MS;
+    tavernHelperObserver = setInterval(async () => {
+      if (Date.now() >= stopAt) {
+        clearInterval(tavernHelperObserver);
+        tavernHelperObserver = null;
+        return;
+      }
+      if (tavernHelperObserverBusy) return;
+      tavernHelperObserverBusy = true;
+      try {
+        const observation = await observeTavernHelper('startup-observer', { onlyOnChange: true });
+        if (observation.changed && observation.missingTargetIds.length > 0) {
+          void enqueueTavernHelperReconcile('startup observer detected target loss');
+        }
+      } finally {
+        tavernHelperObserverBusy = false;
+      }
+    }, TAVERN_HELPER_OBSERVER_INTERVAL_MS);
   };
 
   if (preferences.get().masterEnabled) {
@@ -133,7 +230,6 @@ async function start() {
     }
   }
 
-  let settingsPanel = null;
   const mount = () => {
     settingsPanel = mountBridgeSettingsPanel(runtime);
     if (settingsPanel) return;
@@ -153,7 +249,9 @@ async function start() {
       automatic: true,
       sensitiveCodec,
     });
+    await observeTavernHelper('EXTENSION_SETTINGS_LOADED:restoreAll-complete');
     scheduleTavernHelperReconcile();
+    startTavernHelperObserver();
     if (value.autoCapture) {
       const blocked = new Set(
         postLoadResults
@@ -166,9 +264,17 @@ async function start() {
   });
 
   if (event_types.APP_READY) {
-    eventSource.once(event_types.APP_READY, () => { void reconcileTavernHelper('APP_READY'); });
+    eventSource.once(event_types.APP_READY, () => { void enqueueTavernHelperReconcile('APP_READY'); });
   }
-  eventSource.once('chatLoaded', () => { void reconcileTavernHelper('chatLoaded'); });
+  eventSource.once('chatLoaded', () => { void enqueueTavernHelperReconcile('chatLoaded'); });
+  if (event_types.SETTINGS_UPDATED) {
+    eventSource.on(event_types.SETTINGS_UPDATED, () => {
+      void observeTavernHelper('SETTINGS_UPDATED observed', { onlyOnChange: true });
+      setTimeout(() => {
+        void enqueueTavernHelperReconcile('SETTINGS_UPDATED');
+      }, TAVERN_HELPER_SETTINGS_UPDATED_SETTLE_MS);
+    });
+  }
 }
 
 try {

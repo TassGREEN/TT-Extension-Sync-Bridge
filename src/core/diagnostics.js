@@ -41,6 +41,24 @@ function sanitizeProbe(value) {
   };
 }
 
+function sanitizeRuntimeDiagnostics(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return { tavernHelperTimeline: [] };
+  }
+  const timeline = Array.isArray(value.tavernHelperTimeline)
+    ? value.tavernHelperTimeline.slice(-64).map(item => ({
+        at: typeof item?.at === 'string' ? redactText(item.at) : null,
+        source: typeof item?.source === 'string' ? redactText(item.source) : null,
+        resultStatus: typeof item?.resultStatus === 'string' ? redactText(item.resultStatus) : null,
+        foundTargetIds: stringArray(item?.foundTargetIds),
+        missingTargetIds: stringArray(item?.missingTargetIds),
+        rootEntryCount: Number.isInteger(item?.rootEntryCount) ? item.rootEntryCount : null,
+        error: typeof item?.error === 'string' ? redactText(item.error) : null,
+      }))
+    : [];
+  return { tavernHelperTimeline: timeline };
+}
+
 function localSummary(state) {
   return {
     lastCapturedHash: state.lastCapturedHash ?? null,
@@ -66,6 +84,7 @@ export async function buildDiagnostics({
   localState,
   pluginVersions = {},
   adapterProbes = {},
+  runtimeDiagnostics = globalThis.TTExtensionSyncBridgeRuntimeDiagnostics ?? {},
   bridgeVersion = null,
   generatedAt = new Date().toISOString(),
 }) {
@@ -103,6 +122,7 @@ export async function buildDiagnostics({
     generatedAt,
     pluginVersions: { ...pluginVersions },
     adapters: adapterDiagnostics,
+    runtime: sanitizeRuntimeDiagnostics(runtimeDiagnostics),
     privacy: {
       includesSnapshotPayloads: false,
       includesChatData: false,

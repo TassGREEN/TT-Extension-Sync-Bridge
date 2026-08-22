@@ -41,12 +41,13 @@ test('browser host exposes settings, persistence, versions, and nested Tavern He
   assert.equal(saved, 1);
 });
 
-test('browser host delegates Tavern Helper script reads and writes to its authoritative public API', () => {
+test('browser host delegates Tavern Helper script reads and writes to its authoritative public API', async () => {
   const extensionSettings = {
     tavern_helper: { script: { scripts: [{ type: 'script', id: 'stale-script' }] } },
   };
   let authoritativeTrees = [{ type: 'script', id: 'authoritative-script' }];
   const calls = [];
+  let immediateSaves = 0;
   const host = createBrowserHost({
     extensionSettings,
     localStorage: {
@@ -56,6 +57,7 @@ test('browser host delegates Tavern Helper script reads and writes to its author
     },
     pluginVersions: { 'third-party/JS-Slash-Runner': '4.8.19' },
     saveSettingsDebounced: () => {},
+    saveSettingsImmediate: async () => { immediateSaves += 1; },
     tavernHelperProvider: () => ({
       getScriptTrees(option) {
         calls.push(['get', option]);
@@ -72,12 +74,20 @@ test('browser host delegates Tavern Helper script reads and writes to its author
     available: true,
     trees: [{ type: 'script', id: 'authoritative-script' }],
   });
-  host.tavernHelperScripts.replace([{ type: 'script', id: 'restored-script' }]);
+  const replaced = host.tavernHelperScripts.replace([{ type: 'script', id: 'restored-script' }]);
+  assert.deepEqual(replaced, {
+    available: true,
+    trees: [{ type: 'script', id: 'restored-script' }],
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(immediateSaves, 1);
   assert.equal(host.hasTavernScript('restored-script'), true);
   assert.equal(host.hasTavernScript('stale-script'), false);
   assert.deepEqual(calls, [
     ['get', { type: 'global' }],
     ['replace', { type: 'global' }],
+    ['get', { type: 'global' }],
     ['get', { type: 'global' }],
     ['get', { type: 'global' }],
   ]);

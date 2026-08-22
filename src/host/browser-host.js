@@ -21,9 +21,14 @@ export function createBrowserHost({
   indexedDB = globalThis.indexedDB,
   IDBKeyRange = globalThis.IDBKeyRange,
 }) {
-  const persistSettings = async () => {
+  const persistSettingsSoon = () => {
     if (typeof saveSettingsImmediate === 'function') {
-      await saveSettingsImmediate();
+      queueMicrotask(() => {
+        Promise.resolve(saveSettingsImmediate()).catch(error => {
+          console.warn('[TT Extension Sync Bridge] immediate settings persistence failed:', error);
+          saveSettingsDebounced();
+        });
+      });
       return;
     }
     saveSettingsDebounced();
@@ -40,18 +45,16 @@ export function createBrowserHost({
         ? { available: true, trees: clone(trees) }
         : { available: false, trees: [] };
     },
-    async replace(trees) {
+    replace(trees) {
       const helper = tavernHelperProvider?.();
       if (typeof helper?.getScriptTrees !== 'function' || typeof helper?.replaceScriptTrees !== 'function') {
         return { available: false, trees: [] };
       }
       helper.replaceScriptTrees(clone(trees), { type: 'global' });
-      await Promise.resolve();
-      await persistSettings();
       const verified = helper.getScriptTrees({ type: 'global' });
-      return Array.isArray(verified)
-        ? { available: true, trees: clone(verified) }
-        : { available: false, trees: [] };
+      if (!Array.isArray(verified)) return { available: false, trees: [] };
+      persistSettingsSoon();
+      return { available: true, trees: clone(verified) };
     },
   };
 
@@ -85,7 +88,11 @@ export function createBrowserHost({
       return flattenScripts(trees).some(script => script?.id === scriptId);
     },
     async saveSettings() {
-      await persistSettings();
+      if (typeof saveSettingsImmediate === 'function') {
+        await saveSettingsImmediate();
+      } else {
+        saveSettingsDebounced();
+      }
     },
   };
 }

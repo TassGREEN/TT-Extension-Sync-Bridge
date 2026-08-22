@@ -53,7 +53,8 @@ export function mountBridgeSettingsPanel(runtime) {
         <div class="ttsb-sensitive-box">
           <label class="checkbox_label"><input data-setting="sensitiveDataSync" type="checkbox"> 加密同步梦境创客 Provider（API URL / Key）</label>
           <input data-setting="sensitivePassphrase" type="password" autocomplete="off" minlength="8" placeholder="同步口令（至少 8 位）" disabled>
-          <small>口令只保留在当前页面内存，不写入 localStorage，也不会参与同步；另一台设备需输入相同口令。</small>
+          <small>口令保存在本机 Bridge 专用 localStorage，不进入 TT 同步快照；另一台设备首次使用时需输入同一口令。</small>
+          <button type="button" class="menu_button" data-action="forget-passphrase">忘记本机口令</button>
         </div>
         <div class="ttsb-adapters"></div>
         <div class="ttsb-actions">
@@ -74,7 +75,7 @@ export function mountBridgeSettingsPanel(runtime) {
   const sensitiveToggle = root.querySelector('[data-setting="sensitiveDataSync"]');
   const sensitivePassphrase = root.querySelector('[data-setting="sensitivePassphrase"]');
   let previews = null;
-  let sensitiveSessionEnabled = false;
+  sensitivePassphrase.value = runtime.passphrases.get();
 
   for (const adapter of runtime.controller.listAdapters()) {
     const label = document.createElement('label');
@@ -97,8 +98,8 @@ export function mountBridgeSettingsPanel(runtime) {
     const preferences = runtime.preferences.get();
     root.querySelector('[data-setting="masterEnabled"]').checked = preferences.masterEnabled;
     root.querySelector('[data-setting="autoCapture"]').checked = preferences.autoCapture;
-    sensitiveToggle.checked = sensitiveSessionEnabled;
-    sensitivePassphrase.disabled = !sensitiveSessionEnabled || !preferences.masterEnabled;
+    sensitiveToggle.checked = preferences.sensitiveDataSync;
+    sensitivePassphrase.disabled = !preferences.sensitiveDataSync || !preferences.masterEnabled;
     for (const checkbox of root.querySelectorAll('[data-adapter-id]')) {
       checkbox.checked = preferences.adapters[checkbox.dataset.adapterId] !== false;
       checkbox.disabled = !preferences.masterEnabled;
@@ -106,8 +107,19 @@ export function mountBridgeSettingsPanel(runtime) {
   }
 
   function sensitiveCodec() {
-    if (!sensitiveSessionEnabled) return null;
-    return createPassphraseSensitiveCodec(sensitivePassphrase.value);
+    if (!runtime.preferences.get().sensitiveDataSync) return null;
+    const codec = createPassphraseSensitiveCodec(sensitivePassphrase.value);
+    runtime.passphrases.set(sensitivePassphrase.value);
+    return codec;
+  }
+
+  async function captureEnabledAdapters(codec) {
+    const output = [];
+    for (const adapterId of enabledAdapterIds()) {
+      const includeSensitive = adapterId === 'dream-card-agent' && codec !== null;
+      output.push(...await runtime.controller.captureAll([adapterId], { includeSensitive, sensitiveCodec: codec }));
+    }
+    return output;
   }
 
   async function refreshStatus() {
@@ -155,13 +167,20 @@ export function mountBridgeSettingsPanel(runtime) {
   root.querySelector('[data-setting="autoCapture"]').addEventListener('change', async event => {
     runtime.preferences.update({ autoCapture: event.currentTarget.checked });
     if (event.currentTarget.checked) {
-      await busy('正在执行首次自动采集…', () => runtime.controller.captureAll(enabledAdapterIds()));
+      let codec;
+      try {
+        codec = sensitiveCodec();
+      } catch (error) {
+        summary.textContent = error instanceof Error ? error.message : String(error);
+        return;
+      }
+      await busy('正在执行首次自动采集…', () => captureEnabledAdapters(codec));
       summary.textContent = '自动采集已开启。';
       await refreshStatus();
     }
   });
   sensitiveToggle.addEventListener('change', event => {
-    sensitiveSessionEnabled = event.currentTarget.checked;
+    runtime.preferences.update({ sensitiveDataSync: event.currentTarget.checked });
     previews = null;
     restoreButton.disabled = true;
     syncControls();
@@ -169,6 +188,21 @@ export function mountBridgeSettingsPanel(runtime) {
   sensitivePassphrase.addEventListener('input', () => {
     previews = null;
     restoreButton.disabled = true;
+  });
+  sensitivePassphrase.addEventListener('change', () => {
+    if (sensitivePassphrase.value.length >= 8) {
+      runtime.passphrases.set(sensitivePassphrase.value);
+      summary.textContent = '同步口令已保存在本机。';
+    }
+  });
+  root.querySelector('[data-action="forget-passphrase"]').addEventListener('click', () => {
+    runtime.passphrases.clear();
+    runtime.preferences.update({ sensitiveDataSync: false });
+    sensitivePassphrase.value = '';
+    previews = null;
+    restoreButton.disabled = true;
+    summary.textContent = '本机保存的同步口令已清除；同步快照未删除。';
+    syncControls();
   });
   for (const checkbox of root.querySelectorAll('[data-adapter-id]')) {
     checkbox.addEventListener('change', event => {
@@ -189,15 +223,8 @@ export function mountBridgeSettingsPanel(runtime) {
       summary.textContent = error instanceof Error ? error.message : String(error);
       return;
     }
-    const results = await busy('正在采集并写入 Extension Store…', async () => {
-      const output = [];
-      for (const adapterId of enabledAdapterIds()) {
-        const includeSensitive = adapterId === 'dream-card-agent' && codec !== null;
-        output.push(...await runtime.controller.captureAll([adapterId], { includeSensitive, sensitiveCodec: codec }));
-      }
-      return output;
-    });
-    summary.textContent = `采集完成：${results.filter(item => item.status === 'captured').length} 项更新，${results.filter(item => item.status === 'failed').length} 项失败。`;
+    const results = await busy('正在采集并写入 Extension Store…', () => captureEnabledAdapters(codec));
+    summary.textContent = `采集完成：${results.filter(item => item.status === 'captured').length} 项更新，${results.filter(item => item.status === 'deferred').length} 项等待初始化，${results.filter(item => item.status === 'failed').length} 项失败。`;
     await refreshStatus();
   });
 

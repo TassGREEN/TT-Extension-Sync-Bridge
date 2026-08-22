@@ -6,13 +6,15 @@
 | --- | --- | --- |
 | 独立可安装扩展 | 已证明 | `manifest.json`、入口、CSS 和源码已复制到当前 TT `data/extensions/third-party/TT-Extension-Sync-Bridge`，安装目录与项目文件哈希一致；TT 重启后用户从真实设置 UI 执行“立即采集”成功 |
 | Extension Store 为唯一同步载体 | 已证明 | `ExtensionStoreSnapshotStore` 只调用 `window.__TAURITAVERN__.api.extension.store`；五份真实 adapter 快照均写入 `_tauritavern/extension-store/tt-extension-sync-bridge/kv/snapshots`，推送后的服务端副本逐文件大小与 SHA-256 完全一致 |
-| 五个 adapter | 已证明实现 | 酒馆助手脚本、数据库、API 管理器、梦境创客、st-chatu8 均有独立 capture/preview/restore/validate；62 项测试通过 |
+| 五个 adapter | 已证明实现 | 酒馆助手脚本、数据库、API 管理器、梦境创客、st-chatu8 均有独立 capture/preview/restore/validate；65 项测试通过 |
 | 数据库真实路径 | 已证明 | 实机 schema 确认两层路径 `extension_settings.__userscripts.shujuku_v104__userscript_settings_v1`；真实只读 capture/hash 验证通过 |
 | st-chatu8 版本与 IndexedDB 边界 | 已证明 | 仅接受 2.8.x / `chatu8_gallery` v6；真实 WebView 采集确认 DB 可访问且当前手动标签为 0 条；只同步 `tags.fileName == "manual"`，单事务替换并保留其他记录；缺失 DB 不创建而延迟到插件初始化后重试 |
 | 酒馆助手稳定 ID | 已证明 | 只采集三个固定 ID；本机真实脚本 capture/hash 通过；同名异 ID 测试为硬冲突 |
 | 敏感数据默认排除 | 已证明到真实快照层 | 旧版五份真实 Extension Store 快照的 `sensitiveDataIncluded` 均为 `false`，凭据形态命中均为 0；API 管理器真实 localStorage 采集得到 6 项并产生 9 个脱敏占位符 |
 | 梦境创客 Provider 加密同步 | 自动化已证明，实机待验证 | AES-GCM/PBKDF2 envelope、明文/口令不落快照、稳定带密钥指纹、重复采集幂等、缺/错口令零写入、正确口令空设备恢复、禁止加密快照降级覆盖均有测试；还需 TT 实机重新采集与第二设备恢复 |
 | 梦境创客会话索引指针修复 | 自动化已证明，实机待触发 | 仅对 v0.1.0 特征（完整 binding ID/revision/size/SHA-256、只缺 URL）按固定命名规则补回 URL；不读取索引或会话文件；未知不完整记录不处理 |
+| 手机端脚本部分初始化 | 自动化已证明，手机待复测 | controller 公共接口复现旧版 `failed`；现改为 `deferred`，旧完整快照 content hash/revision 保持不变，部分 payload 不发布 |
+| 本机记住加密口令 | 自动化已证明，实机待复测 | 口令与开关可跨重载保留并可清除；仅写设备 localStorage，不进入 Extension Store；同源脚本可访问的边界已写入 UI/安全文档 |
 | 不读取聊天/摘要/metadata | 已证明到源码边界 | 浏览器入口不导入聊天 API；host 只暴露目标 `extension_settings`、指定 localStorage、manifest 版本与 Extension Store；诊断不含 payload |
 | 完整性、版本、迁移与冲突 | 已证明 | `contentHash` 校验完整 payload；`nonSensitiveHash` 用于跨设备一致性；未知 schema/未来 adapter/不支持插件版本拒绝；旧 adapter 版本无显式迁移即拒绝 |
 | 幂等与缺失插件 | 已证明 | 单 adapter 和完整五-adapter A→B 模拟测试均通过；重复恢复全部 `noop`，脚本数量保持 3；缺失目标返回 `missing-target` |
@@ -24,8 +26,8 @@
 ## 当前自动化结果
 
 ```text
-tests 62
-pass 62
+tests 65
+pass 65
 fail 0
 ```
 

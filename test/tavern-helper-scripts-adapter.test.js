@@ -120,13 +120,15 @@ test('script capture rejects likely embedded credentials without reporting the v
   await assert.rejects(() => tavernHelperScriptsAdapter.capture(host), /embedded credential.*API管理器/i);
 });
 
-test('script capture refuses an incomplete target set instead of replacing a complete snapshot', async () => {
+test('script capture defers an incomplete target set instead of publishing a partial payload', async () => {
   const host = hostWithScripts([
     script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'console.log("db")'),
   ]);
 
-  await assert.rejects(
-    () => tavernHelperScriptsAdapter.capture(host),
-    /target scripts are not fully initialized/i,
-  );
+  const result = await tavernHelperScriptsAdapter.capture(host);
+
+  assert.equal(result.status, 'deferred');
+  assert.equal(result.reason, 'target-scripts-not-fully-initialized');
+  assert.equal(result.payload, null);
+  assert.deepEqual(result.diagnostics.missingScriptIds, [API_SCRIPT.id, DREAM_SCRIPT.id]);
 });

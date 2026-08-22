@@ -42,6 +42,20 @@ export class BridgeController {
       this.localState.setAdapterState(adapterId, { lastResult: result, lastCheckedAt: this.now() });
       return result;
     }
+    if (captured.status === 'deferred') {
+      const result = {
+        status: 'deferred',
+        adapterId,
+        reason: captured.reason,
+        diagnostics: captured.diagnostics,
+      };
+      this.localState.setAdapterState(adapterId, {
+        lastResult: result,
+        lastCheckedAt: this.now(),
+        error: null,
+      });
+      return result;
+    }
 
     const previous = await this.snapshotStore.getSnapshot(adapterId);
     if (previous !== null) {

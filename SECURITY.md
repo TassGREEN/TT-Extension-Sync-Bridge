@@ -15,7 +15,9 @@ v0.1.0 遗留的梦境创客索引 URL 修复只根据设置内已有 binding ID
 
 默认情况下，API Key、Token、密码、Cookie、授权头、账号标识、Provider URL/Base URL 等按字段名脱敏；恢复时保留目标设备本地值。
 
-唯一可选的敏感同步范围是梦境创客完整 `providers` 数组，其中包含 Provider Base URL、创客自身已加密的 `secrets`，以及模型级 `requestSecrets`。Bridge 使用 PBKDF2-SHA-256（310,000 次）从用户口令派生 256-bit AES-GCM 密钥，随机 16-byte salt、12-byte IV，并用 adapter/context 作为 AAD。快照中只保存加密 envelope 和带密钥的内容指纹，不保存明文或口令。口令只驻留当前页面 DOM/闭包内存，不写入 localStorage 或 Extension Store。
+唯一可选的敏感同步范围是梦境创客完整 `providers` 数组，其中包含 Provider Base URL、创客自身已加密的 `secrets`，以及模型级 `requestSecrets`。Bridge 使用 PBKDF2-SHA-256（310,000 次）从用户口令派生 256-bit AES-GCM 密钥，随机 16-byte salt、12-byte IV，并用 adapter/context 作为 AAD。快照中只保存加密 envelope 和带密钥的内容指纹，不保存明文或口令。
+
+按用户选择，口令保存在设备本地 `tt_extension_sync_bridge.sensitive_passphrase.v1` localStorage key 中，不进入 Extension Store 或 TT 同步。WebView 没有供该扩展使用的系统钥匙串边界，因此该值不是操作系统级安全存储：同一来源内运行的其他酒馆脚本理论上可访问它。UI 提供“忘记本机口令”立即清除；清除不会删除同步快照。
 
 其他 adapter 即使通过代码请求 `includeSensitive: true` 仍 fail closed。已有加密快照不能由非敏感采集降级覆盖。缺少或错误口令时，恢复在任何目标设置写入前终止。
 
@@ -29,6 +31,7 @@ v0.1.0 遗留的梦境创客索引 URL 修复只根据设置内已有 binding ID
 - 同名异 ID 脚本不覆盖。
 - 未知 snapshot/schema/adapter/plugin 数据版本不覆盖。
 - 不提供未确认的“覆盖全部设置”。
+- 酒馆助手三个目标脚本未全部初始化时返回 `deferred`，不发布部分 payload，也不覆盖已有完整快照。
 
 ## 诊断导出
 
@@ -38,6 +41,6 @@ v0.1.0 遗留的梦境创客索引 URL 修复只根据设置内已有 binding ID
 
 - 字段名脱敏无法证明任意第三方结构中不存在语义隐蔽的凭据。适配器因此使用保守规则，并对脚本正文增加凭据形态拦截。
 - 除梦境创客 Provider 的显式口令加密模式外，敏感值不跨设备同步，目标设备需要自行配置。
-- 同步口令丢失后无法恢复已有加密快照；Bridge 不提供口令找回或持久化。
+- 所有设备上保存的同步口令均丢失后无法恢复已有加密快照；Bridge 不提供口令找回。
 - st-chatu8 IndexedDB 只访问 `chatu8_gallery` v6 的 `tags` store，并仅处理 index `fileName == "manual"` 的用户手工标签；不会创建缺失数据库，不复制图片、词表或其他记录。
 - 真实跨物理设备同步仍依赖用户配置的 TT-Sync 数据集和网络/本地同步链路。

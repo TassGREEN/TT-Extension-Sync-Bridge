@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   BridgeLocalStateStore,
+  BridgePassphraseStore,
   BridgePreferencesStore,
   DEFAULT_ADAPTER_IDS,
 } from '../src/store/local-state-store.js';
@@ -34,11 +35,29 @@ test('preferences default safely and persist adapter switches locally', () => {
   assert.equal(reloaded.adapters['dream-card-agent'], true);
 });
 
-test('preferences fail closed if plaintext sensitive sync is requested', () => {
-  const preferences = new BridgePreferencesStore(memoryStorage());
+test('encrypted sensitive sync preference survives reload on the same device', () => {
+  const storage = memoryStorage();
+  const preferences = new BridgePreferencesStore(storage);
 
-  assert.throws(() => preferences.update({ sensitiveDataSync: true }), /encrypted sensitive sync is not implemented/i);
-  assert.equal(preferences.get().sensitiveDataSync, false);
+  preferences.update({ sensitiveDataSync: true });
+
+  assert.equal(new BridgePreferencesStore(storage).get().sensitiveDataSync, true);
+});
+
+test('passphrase is saved locally once, reloadable, and clearable', () => {
+  const storage = memoryStorage();
+  const passphrases = new BridgePassphraseStore(storage);
+
+  passphrases.set('remember this passphrase');
+  assert.equal(new BridgePassphraseStore(storage).get(), 'remember this passphrase');
+
+  passphrases.clear();
+  assert.equal(new BridgePassphraseStore(storage).get(), '');
+});
+
+test('passphrase store refuses a short value', () => {
+  const passphrases = new BridgePassphraseStore(memoryStorage());
+  assert.throws(() => passphrases.set('short'), /at least 8 characters/i);
 });
 
 test('local adapter state and device ID survive reload without entering Extension Store', () => {

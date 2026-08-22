@@ -49,11 +49,13 @@ data/extensions/third-party/TT-Extension-Sync-Bridge
 5. Bridge 会自动应用无冲突的干净设备/已跟踪更新；已有未跟踪本地差异会停止并标记冲突。
 6. 对冲突先点“恢复前预览”，确认后再恢复。
 
-若要同步梦境创客 Provider 的 API URL / Key：源设备勾选“加密同步梦境创客 Provider”，输入至少 8 位同步口令，再点“立即采集”；目标设备下载同步后勾选同一项、输入完全相同的口令，再执行恢复预览和恢复。口令只驻留当前页面内存，不写入 localStorage、设置文件或快照；TT 重载后需重新输入。忘记口令无法恢复该加密快照。
+若要同步梦境创客 Provider 的 API URL / Key：源设备勾选“加密同步梦境创客 Provider”，输入至少 8 位同步口令，再点“立即采集”；目标设备下载同步后勾选同一项、输入完全相同的口令，再执行恢复预览和恢复。每台设备只需首次输入，口令保存在该设备的 Bridge 专用 localStorage，不进入 TT 设置或同步快照；可用“忘记本机口令”清除。忘记所有设备上的口令后无法恢复已有加密快照。
 
 未开启加密同步时，凭据只留在各设备本地，脱敏占位符会保留目标设备已有凭据。已有加密快照不能被普通非敏感采集降级覆盖。其他 adapter 的敏感字段仍不支持同步。
 
 v0.2.0 会在采集梦境创客时修复 v0.1.0 曾误删的 `characterStores.*.url`：仅当引用具备完整 binding ID、revision、size 和 SHA-256 且只缺 URL 时，按创客固定文件命名规则补回指针；不会打开会话或索引文件。
+
+手机端若点击采集时酒馆助手三个目标脚本尚未全部初始化，Bridge 会显示“等待插件初始化”，保留已有完整快照，不再误显示为普通失败，也绝不会发布部分脚本快照。
 
 每份快照同时记录 `contentHash`（完整 payload 完整性）和 `nonSensitiveHash`（忽略脱敏占位符后的跨设备一致性）。冲突判断使用后者，避免两台设备本地凭据字段是否存在造成假冲突。
 
@@ -75,7 +77,10 @@ v0.2.0 会在采集梦境创客时修复 v0.1.0 曾误删的 `characterStores.*.
 ```text
 tt_extension_sync_bridge.preferences.v1
 tt_extension_sync_bridge.local_state.v1
+tt_extension_sync_bridge.sensitive_passphrase.v1
 ```
+
+最后一项是用户明确选择“记住口令”后的设备本地敏感值。同一 SillyTavern/WebView 来源内运行的其他脚本理论上也能访问 localStorage；不接受该边界时请使用“忘记本机口令”，之后每次手动输入。
 
 禁用或卸载扩展不会删除目标插件数据。卸载扩展也不会自动删除已同步快照，避免无提示的数据丢失。
 

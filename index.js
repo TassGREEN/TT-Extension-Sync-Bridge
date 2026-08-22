@@ -7,9 +7,14 @@ import { dreamCardAgentAdapter } from './src/adapters/dream-card-agent-adapter.j
 import { stChatu8Adapter } from './src/adapters/st-chatu8-adapter.js';
 import { tavernHelperScriptsAdapter } from './src/adapters/tavern-helper-scripts-adapter.js';
 import { BridgeController } from './src/core/bridge-controller.js';
+import { createPassphraseSensitiveCodec } from './src/core/sensitive-envelope.js';
 import { createBrowserHost, loadPluginVersions } from './src/host/browser-host.js';
 import { ExtensionStoreSnapshotStore } from './src/store/extension-store-snapshot-store.js';
-import { BridgeLocalStateStore, BridgePreferencesStore } from './src/store/local-state-store.js';
+import {
+  BridgeLocalStateStore,
+  BridgePassphraseStore,
+  BridgePreferencesStore,
+} from './src/store/local-state-store.js';
 import { mountBridgeSettingsPanel } from './src/ui/settings-panel.js';
 
 const adapters = [
@@ -40,6 +45,7 @@ async function start() {
     saveSettingsDebounced,
   });
   const preferences = new BridgePreferencesStore(globalThis.localStorage);
+  const passphrases = new BridgePassphraseStore(globalThis.localStorage);
   const localState = new BridgeLocalStateStore(globalThis.localStorage);
   const snapshotStore = new ExtensionStoreSnapshotStore(extensionStoreApi);
   const controller = new BridgeController({
@@ -49,7 +55,7 @@ async function start() {
     host,
     deviceId: localState.deviceId,
   });
-  const runtime = { controller, snapshotStore, localState, preferences, pluginVersions };
+  const runtime = { controller, snapshotStore, localState, preferences, passphrases, pluginVersions };
   globalThis.TTExtensionSyncBridge = Object.freeze({
     capture: (adapterId, options) => controller.capture(adapterId, options),
     previewRestore: (adapterId, options) => controller.previewRestore(adapterId, options),
@@ -62,8 +68,28 @@ async function start() {
     return adapters.map(adapter => adapter.id).filter(id => value.adapters[id]);
   };
 
+  const savedSensitiveCodec = () => {
+    if (!preferences.get().sensitiveDataSync) return null;
+    const passphrase = passphrases.get();
+    return passphrase ? createPassphraseSensitiveCodec(passphrase) : null;
+  };
+
+  const captureAdapters = async (adapterIds, sensitiveCodec) => {
+    const results = [];
+    for (const adapterId of adapterIds) {
+      results.push(...await controller.captureAll([adapterId], {
+        includeSensitive: adapterId === dreamCardAgentAdapter.id && sensitiveCodec !== null,
+        sensitiveCodec,
+      }));
+    }
+    return results;
+  };
+
   if (preferences.get().masterEnabled) {
-    const earlyResults = await controller.restoreAll(enabledAdapterIds(), { automatic: true });
+    const earlyResults = await controller.restoreAll(enabledAdapterIds(), {
+      automatic: true,
+      sensitiveCodec: savedSensitiveCodec(),
+    });
     const failures = earlyResults.filter(result => result.status === 'failed');
     if (failures.length > 0) {
       console.warn(`[TT Extension Sync Bridge] ${failures.length} early restore adapter(s) failed.`);
@@ -85,16 +111,18 @@ async function start() {
   eventSource.once(event_types.EXTENSION_SETTINGS_LOADED, async () => {
     const value = preferences.get();
     if (!value.masterEnabled) return;
-    const postLoadResults = await controller.restoreAll(enabledAdapterIds(), { automatic: true });
+    const sensitiveCodec = savedSensitiveCodec();
+    const postLoadResults = await controller.restoreAll(enabledAdapterIds(), {
+      automatic: true,
+      sensitiveCodec,
+    });
     if (value.autoCapture) {
       const blocked = new Set(
         postLoadResults
           .filter(result => ['deferred', 'locked', 'conflict', 'incompatible', 'failed'].includes(result.status))
           .map(result => result.adapterId),
       );
-      await controller.captureAll(enabledAdapterIds().filter(adapterId => !blocked.has(adapterId)), {
-        includeSensitive: false,
-      });
+      await captureAdapters(enabledAdapterIds().filter(adapterId => !blocked.has(adapterId)), sensitiveCodec);
     }
     await settingsPanel?.refreshStatus();
   });

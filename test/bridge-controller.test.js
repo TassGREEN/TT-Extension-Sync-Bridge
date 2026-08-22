@@ -427,3 +427,60 @@ test('controller stores encrypted Dream providers, locks without a passphrase, a
   assert.equal(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].providers[0].baseURL, sourceUrl);
   assert.equal(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].providers[0].secrets.ciphertext, sourceSecret);
 });
+
+test('mobile capture defers partially initialized Tavern Helper scripts without replacing the complete snapshot', async () => {
+  const makeScript = (target, content) => ({
+    type: 'script',
+    enabled: true,
+    id: target.id,
+    name: target.name,
+    content,
+    info: '',
+    button: { enabled: true, buttons: [] },
+    data: {},
+    export_with: { data: true, button: true },
+  });
+  const source = createMemoryHost({
+    extensionSettings: {
+      [TAVERN_HELPER_SETTINGS_KEY]: {
+        script: { scripts: TARGET_TAVERN_SCRIPTS.map((target, index) => makeScript(target, `source-${index}`)) },
+      },
+    },
+    pluginVersions: { 'third-party/JS-Slash-Runner': '4.8.12' },
+  });
+  const store = new MemorySnapshotStore();
+  const sourceController = new BridgeController({
+    adapters: [tavernHelperScriptsAdapter],
+    snapshotStore: store,
+    localState: new MemoryLocalState(),
+    host: source,
+    deviceId: 'desktop',
+  });
+  const original = await sourceController.capture(tavernHelperScriptsAdapter.id);
+
+  const mobile = createMemoryHost({
+    extensionSettings: {
+      [TAVERN_HELPER_SETTINGS_KEY]: {
+        script: { scripts: [makeScript(TARGET_TAVERN_SCRIPTS[0], 'mobile-partial')] },
+      },
+    },
+    pluginVersions: { 'third-party/JS-Slash-Runner': '4.8.12' },
+  });
+  const mobileState = new MemoryLocalState();
+  const mobileController = new BridgeController({
+    adapters: [tavernHelperScriptsAdapter],
+    snapshotStore: store,
+    localState: mobileState,
+    host: mobile,
+    deviceId: 'mobile',
+  });
+
+  const [result] = await mobileController.captureAll([tavernHelperScriptsAdapter.id]);
+  const preserved = await store.getSnapshot(tavernHelperScriptsAdapter.id);
+
+  assert.equal(result.status, 'deferred');
+  assert.equal(result.reason, 'target-scripts-not-fully-initialized');
+  assert.equal(preserved.contentHash, original.snapshot.contentHash);
+  assert.equal(preserved.sourceRevision, original.snapshot.sourceRevision);
+  assert.equal(mobileState.getAdapterState(tavernHelperScriptsAdapter.id).lastResult.status, 'deferred');
+});

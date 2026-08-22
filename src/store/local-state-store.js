@@ -1,5 +1,6 @@
 export const PREFERENCES_KEY = 'tt_extension_sync_bridge.preferences.v1';
 export const LOCAL_STATE_KEY = 'tt_extension_sync_bridge.local_state.v1';
+export const PASSPHRASE_KEY = 'tt_extension_sync_bridge.sensitive_passphrase.v1';
 
 export const DEFAULT_ADAPTER_IDS = Object.freeze([
   'tavern-helper-global-scripts',
@@ -35,7 +36,9 @@ function normalizePreferences(value) {
   return {
     masterEnabled: typeof value.masterEnabled === 'boolean' ? value.masterEnabled : defaults.masterEnabled,
     autoCapture: typeof value.autoCapture === 'boolean' ? value.autoCapture : defaults.autoCapture,
-    sensitiveDataSync: false,
+    sensitiveDataSync: typeof value.sensitiveDataSync === 'boolean'
+      ? value.sensitiveDataSync
+      : defaults.sensitiveDataSync,
     adapters: Object.fromEntries(DEFAULT_ADAPTER_IDS.map(id => [
       id,
       typeof value.adapters?.[id] === 'boolean' ? value.adapters[id] : true,
@@ -54,14 +57,13 @@ export class BridgePreferencesStore {
   }
 
   update(patch) {
-    if (patch?.sensitiveDataSync === true) {
-      throw new Error('Encrypted sensitive sync is not implemented; plaintext sensitive sync remains disabled');
-    }
     const next = {
       ...this.value,
       ...(typeof patch?.masterEnabled === 'boolean' ? { masterEnabled: patch.masterEnabled } : {}),
       ...(typeof patch?.autoCapture === 'boolean' ? { autoCapture: patch.autoCapture } : {}),
-      sensitiveDataSync: false,
+      ...(typeof patch?.sensitiveDataSync === 'boolean'
+        ? { sensitiveDataSync: patch.sensitiveDataSync }
+        : {}),
       adapters: { ...this.value.adapters },
     };
     if (patch?.adapters && typeof patch.adapters === 'object') {
@@ -72,6 +74,28 @@ export class BridgePreferencesStore {
     this.value = normalizePreferences(next);
     this.storage.setItem(PREFERENCES_KEY, JSON.stringify(this.value));
     return this.get();
+  }
+}
+
+export class BridgePassphraseStore {
+  constructor(storage) {
+    this.storage = storage;
+  }
+
+  get() {
+    const value = this.storage.getItem(PASSPHRASE_KEY);
+    return typeof value === 'string' && value.length >= 8 ? value : '';
+  }
+
+  set(value) {
+    if (typeof value !== 'string' || value.length < 8) {
+      throw new TypeError('Sensitive sync passphrase must be at least 8 characters');
+    }
+    this.storage.setItem(PASSPHRASE_KEY, value);
+  }
+
+  clear() {
+    this.storage.removeItem(PASSPHRASE_KEY);
   }
 }
 

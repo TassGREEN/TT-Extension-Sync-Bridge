@@ -1,4 +1,4 @@
-import { eventSource, event_types, saveSettingsDebounced } from '/script.js';
+import { eventSource, event_types, saveSettings, saveSettingsDebounced } from '/script.js';
 import { extension_settings } from '/scripts/extensions.js';
 
 import { apiManagerAdapter } from './src/adapters/api-manager-adapter.js';
@@ -24,7 +24,8 @@ const adapters = [
   dreamCardAgentAdapter,
   stChatu8Adapter,
 ];
-const BRIDGE_VERSION = '0.2.4';
+const BRIDGE_VERSION = '0.2.5';
+const TAVERN_HELPER_RECONCILE_DELAYS = [1500, 4000, 9000];
 
 async function start() {
   const tauriHost = globalThis.__TAURITAVERN__;
@@ -44,6 +45,7 @@ async function start() {
     localStorage: globalThis.localStorage,
     pluginVersions,
     saveSettingsDebounced,
+    saveSettingsImmediate: saveSettings,
   });
   const preferences = new BridgePreferencesStore(globalThis.localStorage);
   const passphrases = new BridgePassphraseStore(globalThis.localStorage);
@@ -94,6 +96,32 @@ async function start() {
     return results;
   };
 
+  const reconcileTavernHelper = async source => {
+    const value = preferences.get();
+    if (!value.masterEnabled || !value.adapters[tavernHelperScriptsAdapter.id]) return;
+    try {
+      const result = await controller.restore(tavernHelperScriptsAdapter.id, {
+        confirmConflict: false,
+        sensitiveCodec: savedSensitiveCodec(),
+      });
+      if (result.status === 'applied') {
+        console.info(`[TT Extension Sync Bridge] Tavern Helper scripts reconciled after ${source}.`);
+      }
+      await settingsPanel?.refreshStatus();
+    } catch (error) {
+      console.warn(
+        `[TT Extension Sync Bridge] Tavern Helper reconciliation after ${source} failed:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  };
+
+  const scheduleTavernHelperReconcile = () => {
+    for (const delay of TAVERN_HELPER_RECONCILE_DELAYS) {
+      setTimeout(() => { void reconcileTavernHelper(`${delay}ms stabilization check`); }, delay);
+    }
+  };
+
   if (preferences.get().masterEnabled) {
     const earlyResults = await controller.restoreAll(enabledAdapterIds(), {
       automatic: true,
@@ -125,6 +153,7 @@ async function start() {
       automatic: true,
       sensitiveCodec,
     });
+    scheduleTavernHelperReconcile();
     if (value.autoCapture) {
       const blocked = new Set(
         postLoadResults
@@ -135,6 +164,11 @@ async function start() {
     }
     await settingsPanel?.refreshStatus();
   });
+
+  if (event_types.APP_READY) {
+    eventSource.once(event_types.APP_READY, () => { void reconcileTavernHelper('APP_READY'); });
+  }
+  eventSource.once('chatLoaded', () => { void reconcileTavernHelper('chatLoaded'); });
 }
 
 try {

@@ -127,6 +127,21 @@ function applyRecords(trees, records) {
   return output;
 }
 
+function canSafelyCompletePartialSet(trees, payload) {
+  const incomingById = new Map(payload.records.map(item => [item.record.id, item.record]));
+  const currentTargets = collectLocations(trees).filter(location => incomingById.has(location.record.id));
+  const currentIds = new Set(currentTargets.map(location => location.record.id));
+  if (currentTargets.length === 0 || currentTargets.length !== currentIds.size || currentTargets.length >= payload.records.length) {
+    return false;
+  }
+  return currentTargets.every(location => {
+    const merged = mergeRedacted(location.record, incomingById.get(location.record.id), {
+      preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS,
+    });
+    return canonicalJson(location.record) === canonicalJson(merged);
+  });
+}
+
 export const tavernHelperScriptsAdapter = {
   id: 'tavern-helper-global-scripts',
   label: '酒馆助手全局脚本',
@@ -192,7 +207,11 @@ export const tavernHelperScriptsAdapter = {
     const conflicts = findConflicts(trees, payload);
     if (conflicts.length > 0) return { status: 'conflict', conflicts };
     const restored = applyRecords(trees, payload.records);
-    return { status: canonicalJson(trees) === canonicalJson(restored) ? 'noop' : 'would-change' };
+    if (canonicalJson(trees) === canonicalJson(restored)) return { status: 'noop' };
+    return {
+      status: 'would-change',
+      ...(canSafelyCompletePartialSet(trees, payload) ? { safeToApply: true } : {}),
+    };
   },
 
   async restore(host, payload) {

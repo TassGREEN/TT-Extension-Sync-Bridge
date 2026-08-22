@@ -484,3 +484,56 @@ test('mobile capture defers partially initialized Tavern Helper scripts without 
   assert.equal(preserved.sourceRevision, original.snapshot.sourceRevision);
   assert.equal(mobileState.getAdapterState(tavernHelperScriptsAdapter.id).lastResult.status, 'deferred');
 });
+
+test('automatic restore safely completes an identical partial Tavern Helper script set on mobile', async () => {
+  const makeScript = (target, content) => ({
+    type: 'script',
+    enabled: true,
+    id: target.id,
+    name: target.name,
+    content,
+    info: '',
+    button: { enabled: true, buttons: [] },
+    data: {},
+    export_with: { data: true, button: true },
+  });
+  const completeScripts = TARGET_TAVERN_SCRIPTS.map((target, index) => makeScript(target, `shared-${index}`));
+  const source = createMemoryHost({
+    extensionSettings: {
+      [TAVERN_HELPER_SETTINGS_KEY]: { script: { scripts: completeScripts } },
+    },
+    pluginVersions: { 'third-party/JS-Slash-Runner': '4.8.12' },
+  });
+  const store = new MemorySnapshotStore();
+  await new BridgeController({
+    adapters: [tavernHelperScriptsAdapter],
+    snapshotStore: store,
+    localState: new MemoryLocalState(),
+    host: source,
+    deviceId: 'desktop',
+  }).capture(tavernHelperScriptsAdapter.id);
+
+  const mobile = createMemoryHost({
+    extensionSettings: {
+      [TAVERN_HELPER_SETTINGS_KEY]: { script: { scripts: [completeScripts[0]] } },
+    },
+    pluginVersions: { 'third-party/JS-Slash-Runner': '4.8.12' },
+  });
+  const mobileController = new BridgeController({
+    adapters: [tavernHelperScriptsAdapter],
+    snapshotStore: store,
+    localState: new MemoryLocalState(),
+    host: mobile,
+    deviceId: 'mobile',
+  });
+
+  const [restored] = await mobileController.restoreAll([tavernHelperScriptsAdapter.id], { automatic: true });
+  const [recaptured] = await mobileController.captureAll([tavernHelperScriptsAdapter.id]);
+
+  assert.equal(restored.status, 'applied');
+  assert.equal(recaptured.status, 'unchanged');
+  assert.deepEqual(
+    mobile.inspect().extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts.map(item => item.id),
+    TARGET_TAVERN_SCRIPTS.map(item => item.id),
+  );
+});

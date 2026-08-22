@@ -38,7 +38,7 @@ data/extensions/third-party/TT-Extension-Sync-Bridge
 
 目标设备还需要安装酒馆助手和 st-chatu8；数据库、API 管理器和梦境创客三个酒馆助手脚本可以由同步快照恢复，无需单独安装。
 
-重新加载 TT 后，在扩展设置中找到 `TT Extension Sync Bridge`。扩展的 `loading_order` 为 1，会先于当前 st-chatu8（9）和酒馆助手（100）运行。
+重新加载 TT 后，在扩展设置中找到 `TT Extension Sync Bridge`。扩展的 `loading_order` 为 110，会在当前 st-chatu8（9）和酒馆助手（100）完成初始化后运行，避免恢复的全局脚本被酒馆助手的晚到初始化覆盖。首次补齐酒馆助手脚本后建议再重启一次 TT，让新脚本正式执行。
 
 ## 使用
 

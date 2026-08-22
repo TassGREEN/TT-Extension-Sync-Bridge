@@ -24,7 +24,7 @@ const adapters = [
   dreamCardAgentAdapter,
   stChatu8Adapter,
 ];
-const BRIDGE_VERSION = '0.2.2';
+const BRIDGE_VERSION = '0.2.3';
 
 async function start() {
   const tauriHost = globalThis.__TAURITAVERN__;

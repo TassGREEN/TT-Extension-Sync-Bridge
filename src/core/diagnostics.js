@@ -84,7 +84,7 @@ export async function buildDiagnostics({
   localState,
   pluginVersions = {},
   adapterProbes = {},
-  runtimeDiagnostics = {},
+  runtimeDiagnostics = globalThis.TTExtensionSyncBridgeRuntimeDiagnostics ?? {},
   bridgeVersion = null,
   generatedAt = new Date().toISOString(),
 }) {

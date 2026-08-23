@@ -1,63 +1,71 @@
 # 验收证据
 
-更新时间：2026-08-22。这里区分“已由当前状态证明”和“仍需真实 TT/第二设备证明”，不把单元测试替代成实机结论。
+更新时间：2026-08-24。这里严格区分“源码/自动化已经证明”和“仍需真实 TT 双设备证明”，不把单元测试替代成实机结论。
 
-| 要求 | 当前状态 | 权威证据 |
+## 0.2.14 当前结论
+
+| 要求 | 当前状态 | 证据 / 仍需验证 |
 | --- | --- | --- |
-| 独立可安装扩展 | 已证明 | `manifest.json`、入口、CSS 和源码已复制到当前 TT `data/extensions/third-party/TT-Extension-Sync-Bridge`，安装目录与项目文件哈希一致；TT 重启后用户从真实设置 UI 执行“立即采集”成功 |
-| Extension Store 为唯一同步载体 | 已证明 | `ExtensionStoreSnapshotStore` 只调用 `window.__TAURITAVERN__.api.extension.store`；五份真实 adapter 快照均写入 `_tauritavern/extension-store/tt-extension-sync-bridge/kv/snapshots`，推送后的服务端副本逐文件大小与 SHA-256 完全一致 |
-| 五个 adapter | 已证明实现 | 酒馆助手脚本、数据库、API 管理器、梦境创客、st-chatu8 均有独立 capture/preview/restore/validate；68 项测试通过 |
-| 数据库真实路径 | 已证明 | 实机 schema 确认两层路径 `extension_settings.__userscripts.shujuku_v104__userscript_settings_v1`；真实只读 capture/hash 验证通过 |
-| st-chatu8 版本与 IndexedDB 边界 | 已证明 | 仅接受 2.8.x / `chatu8_gallery` v6；真实 WebView 采集确认 DB 可访问且当前手动标签为 0 条；只同步 `tags.fileName == "manual"`，单事务替换并保留其他记录；缺失 DB 不创建而延迟到插件初始化后重试 |
-| 酒馆助手稳定 ID | 已证明 | 只采集三个固定 ID；本机真实脚本 capture/hash 通过；同名异 ID 测试为硬冲突 |
-| 敏感数据默认排除 | 已证明到真实快照层 | 旧版五份真实 Extension Store 快照的 `sensitiveDataIncluded` 均为 `false`，凭据形态命中均为 0；API 管理器真实 localStorage 采集得到 6 项并产生 9 个脱敏占位符 |
-| 梦境创客 Provider 加密同步 | 自动化已证明，实机待验证 | AES-GCM/PBKDF2 envelope、明文/口令不落快照、稳定带密钥指纹、重复采集幂等、缺/错口令零写入、正确口令空设备恢复、禁止加密快照降级覆盖均有测试；还需 TT 实机重新采集与第二设备恢复 |
-| 梦境创客会话索引指针修复 | 自动化已证明，实机待触发 | 仅对 v0.1.0 特征（完整 binding ID/revision/size/SHA-256、只缺 URL）按固定命名规则补回 URL；不读取索引或会话文件；未知不完整记录不处理 |
-| 手机端脚本部分初始化 | 自动化已证明，手机待复测 | controller 公共接口复现旧版 `failed`；现改为 `deferred`，旧完整快照 content hash/revision 保持不变，部分 payload 不发布；现有部分与快照一致时自动补齐，不同时保持冲突 |
-| 本机记住加密口令 | 自动化已证明，实机待复测 | 口令与开关可跨重载保留并可清除；仅写设备 localStorage，不进入 Extension Store；同源脚本可访问的边界已写入 UI/安全文档 |
-| 手机可复制诊断 | 自动化已证明，手机待复测 | 实时探针只报告版本、结构计数和固定目标 ID found/missing；诊断固定白名单丢弃未知字段，不含 payload/正文；UI 提供剪贴板与长按文本框双路径 |
-| 酒馆助手内部 store 覆盖 | 根因与自动化修复已证明，手机待复测 | v0.2.2/v0.2.3 手机日志均显示完整快照先应用、随后 API 管理器与梦境创客 ID 消失；4.8.19 官方源码确认 `extension_settings` 之外另有 Pinia 权威 store，并提供 `getScriptTrees` / `replaceScriptTrees`。v0.2.4 改用该公共接口；回归测试模拟其 watcher 再写回后，三个 ID 仍保留；接口未就绪时零写入并返回 `deferred` |
-| 不读取聊天/摘要/metadata | 已证明到源码边界 | 浏览器入口不导入聊天 API；host 只暴露目标 `extension_settings`、指定 localStorage、manifest 版本与 Extension Store；诊断不含 payload |
-| 完整性、版本、迁移与冲突 | 已证明 | `contentHash` 校验完整 payload；`nonSensitiveHash` 用于跨设备一致性；未知 schema/未来 adapter/不支持插件版本拒绝；旧 adapter 版本无显式迁移即拒绝 |
-| 幂等与缺失插件 | 已证明 | 单 adapter 和完整五-adapter A→B 模拟测试均通过；重复恢复全部 `noop`，脚本数量保持 3；缺失目标返回 `missing-target` |
-| UI 要求 | 部分实机证明 | 用户已从旧版真实设置 UI 成功执行“立即采集”；当前源码包含总开关、各 adapter、手动/自动采集、会话内加密口令、预览、确认恢复、状态/时间/双 hash/来源设备、脱敏诊断；新版口令流程待实机验收 |
-| 物理设备 A→B→A | A→服务端已证明 | 设备 A 已生成并推送五份真实快照，服务端逐文件 SHA-256 相同；仍需第二设备下载/恢复并比较 `nonSensitiveHash`，再回传 A 完成闭环 |
-| 启用/禁用/卸载 | 未证明 | 依赖当前 TT 重新发现扩展后执行 UI 验收；扩展没有删除或 cleanup hook，卸载不会主动删除目标数据 |
-| 文档 | 已证明 | `README.md`、`SUPPORT_MATRIX.md`、`SECURITY.md`、`MANUAL_E2E.md` |
+| 独立可安装扩展 | 已有实机证据 | 旧版 Bridge 已在真实 TauriTavern 设置页运行、采集并写入 Extension Store；0.2.14 保持相同入口/manifest 结构，版本号统一为 0.2.14 |
+| Extension Store 为同步载体 | 已有实机证据 | 旧版五 adapter 快照曾通过 TT-Sync A→服务端逐文件校验；0.2.14 仍由 `ExtensionStoreSnapshotStore` 读写 `_tauritavern/extension-store/tt-extension-sync-bridge/snapshots/*.json` |
+| 五个 adapter | 自动化已证明 | 酒馆助手、数据库、API 管理器、梦境创客、st-chatu8 均进入完整 A→B 模拟往返；最终 CI 以 PR 最新测试结果为准 |
+| API 管理器 2.x 存储兼容 | 自动化已证明，双设备已有正向现象 | 支持 raw array、wrapper、唯一嵌套数组、object map、2.1.1 `grouped-api-configs`；双设备测试中 API 管理器已成功同步，0.2.14 继续保留这些修复 |
+| 酒馆助手完整全局脚本 | 自动化已证明，0.2.14 双设备待复测 | 加密快照包含完整全局脚本树；公开 payload 无正文；按 UUID/逻辑别名增量合并，目标独有脚本保留；额外全局脚本不再局限于三个固定目标 |
+| 酒馆助手缩水保护 | 自动化已证明 | adapter 有 `captureRegression`，controller 默认阻止较小脚本集合覆盖已有完整快照；正常自动/手动 UI 均不暴露绕过开关；脚本删除当前不跨设备传播 |
+| Tavern Helper 权威 store 写入 | 源码与自动化已证明，双设备待复测 | 恢复通过 `getScriptTrees` / `replaceScriptTrees`，接口未就绪返回 `deferred`；此前手机端“先恢复后消失”的根因已定位到内部权威 store 覆盖 |
+| 梦境创客普通可移植设置 | 自动化已证明，0.2.14 双设备待复测 | Agent、Preset、Provider 等可移植设置进入 v4 payload；旧 v1-v3 adapter 有显式迁移，未知版本拒绝 |
+| 梦境创客 Global Skill 真文件 | 上游源码 + 自动化已证明，双设备待复测 | 已对照梦境创客 `GlobalSkillStore`：registry key、`SKILL.md`、资源索引与 `/user/files/` 写法一致；Bridge 加密打包字节，目标重新上传/重建 URL；删除或损坏目标文件后可检测并修复 |
+| 梦境创客会话边界 | 自动化已证明 | `characterStores`、`workspaceFiles`、普通 `files`/session/lease blob、`builtinSkillPackages` 始终保留目标本地；旧快照也不能把源设备 `/user/files/...` 会话引用灌到目标 |
+| Dream Global Skill 上游限制 | 源码已确认 | 上游创客保存 Global Skill 时限制单资源 20MB、单 Skill 资源总计 100MB、文件+目录 500 项；Bridge 不枚举目录，只处理上游 `globalSkills` 已引用资产并逐文件校验 size/SHA-256 |
+| st-chatu8 workflow / 敏感设置 | 自动化已证明，0.2.14 双设备待复测 | worker/workflow 正文只进入加密 envelope；恢复后触发插件运行态 refresh；manual tags 仍只处理 `fileName="manual"` |
+| st-chatu8 IndexedDB 边界 | 已有源码/实机读取证据 | 只接受已审计 2.8.x / `chatu8_gallery` v6；只替换 manual tags，保留安装词表、图片与非 manual 数据；缺失 DB 不创建 |
+| 数据库 adapter | 已有源码/实机证据 | 实机路径 `extension_settings.__userscripts.shujuku_v104__userscript_settings_v1` 已确认；窗口状态明确排除 |
+| 敏感内容不明文进公开快照 | 自动化已证明 | Tavern Helper 脚本正文、API config Key/URL、Dream Provider/Global Skill 字节、st-chatu8 workflow/凭据均只在显式加密模式进入 AES-GCM envelope；测试检查序列化快照不含测试明文 |
+| 加密与降级保护 | 自动化已证明 | PBKDF2-SHA-256 + AES-GCM；缺口令 `locked`、错口令零写入；已有加密快照拒绝非敏感降级覆盖；口令只在本机 Bridge localStorage |
+| `/user/files/` 文件 host 边界 | 自动化已证明 | 只允许 `/user/files/<单一安全文件名>`；拒绝 `..`、编码路径穿越、目录分隔符、query/hash 和不安全 upload 返回路径；不提供目录枚举 |
+| 不读取聊天/摘要/metadata | 源码边界已证明 | Bridge 不导入聊天 API；Dream 明确排除会话索引/workspace/session blob；诊断不含 snapshot payload/正文 |
+| 完整性、版本、迁移与冲突 | 自动化已证明 | `contentHash` 校验原始 payload，`nonSensitiveHash` 处理跨设备脱敏一致性；未知 schema/adapter/plugin 版本拒绝；硬冲突不允许强制覆盖 |
+| 幂等 | 自动化已证明 | 全 adapter 模拟 A→B 后重复恢复收敛到 `noop`；Dream Global Skill 健康时不重复上传文件，Tavern Helper 不重复建脚本 |
+| UI | 源码已完成，0.2.14 实机待复测 | 同步范围和同步详情为抽屉；外层显示最近更新时间；诊断为抽屉式“复制诊断日志”；不再单独导出脱敏文件 |
+| 0.2.14 物理设备 A→B→A | **待复测** | 旧版双设备测试成功暴露了三个缺口：Dream/st 数据未完整恢复、酒馆助手额外脚本未同步；0.2.14 正是针对这些缺口扩展契约，需按 `MANUAL_E2E.md` 再做一次完整闭环 |
 
-## 当前自动化结果
+## 已确认的历史实机证据
 
-```text
-tests 71
-pass 71
-fail 0
-```
+2026-08-22 至 2026-08-23 的旧版实机调试已经确认：
 
-完整集成测试覆盖：设备 A 同时采集五个 adapter，设备 B 按“脚本→数据库/API/梦境→st-chatu8”顺序恢复，注入 B 本地凭据，再次恢复全部 `noop`，重新采集全部 `unchanged`，五个 `nonSensitiveHash` 与 A 一致。
+- Bridge 能在真实 TT 设置页运行并写入 Extension Store；
+- TT-Sync 能把 Bridge 快照搬到另一设备/服务端；
+- API 管理器经过存储格式修复后能跨设备恢复；
+- Tavern Helper 公共 API 在真实 4.x 环境可用；
+- 旧实现对 Dream/st/额外全局脚本的覆盖不足，双设备测试可稳定复现，因此不能把旧版“设置快照已同步”当成 0.2.14 新契约的实机完成证据。
 
-## 实机只读 capture 结果
+这些失败不是被删掉的历史，而是 0.2.14 扩大同步边界的直接依据。
 
-| Adapter | 结果 | Payload bytes | 脱敏占位符 | 凭据形态命中 |
-| --- | --- | ---: | ---: | ---: |
-| 酒馆助手三个脚本 | verified | 648404 | 0 | 0 |
-| 蚀心入魔·数据库 | verified | 164019 | 1 | 0 |
-| 梦境创客 | verified | 4812 | 14 | 0 |
-| st-chatu8 settings 部分 | verified | 555656 | 46 | 0 |
+## 当前自动化覆盖
 
-st-chatu8 manual-tags IndexedDB 支持是在上述早期只读采集后补入的；后续真实 Extension Store 采集已确认 WebView DB 读取成功，证据见下节。
+测试集覆盖至少以下路径：
 
-上述只读审计未写入 Extension Store，也未输出 payload 或任何凭据值。
+- snapshot 稳定序列化、完整/非敏感 hash、篡改拒绝和 adapter 迁移；
+- controller 未跟踪本地差异、`noop` 基线、依赖未就绪、加密锁定和 capture regression；
+- Tavern Helper 完整加密脚本树、任意额外全局脚本、UUID/别名合并、目标独有脚本保留、重复恢复、缩水保护和公共 API 写入；
+- API 管理器多种 2.x 存储 dialect、敏感/非敏感恢复和 JSON 兼容；
+- Dream v4 可移植设置、旧快照本地边界、Global Skill 文件加密打包、目标重建、损坏修复和 session 数据不越界；
+- st-chatu8 加密 workflow/凭据、运行态 refresh、manual tags IndexedDB 事务；
+- 浏览器 host `/user/files/` 下载/上传/删除以及路径穿越拒绝；
+- 五 adapter 加密 A→B 总往返、重复恢复 `noop`、重新采集 `unchanged`。
 
-## 实机 Extension Store 与推送结果
+最终自动化结果以 PR #12 最后一次 `Temporary Bridge Tests` 成功运行作为发布前证据，不在本文硬编码容易过时的测试数量。
 
-2026-08-22 TT 重启后，用户从 Bridge 设置 UI 执行“立即采集”。五份快照的 schema、adapter 版本、完整 payload hash 和非敏感 hash 均通过验证；随后通过 TT-Sync 推送至 `A:\Game\TauriTavern\TT-Sync-Store`，服务端副本与本机逐字节一致。
+## 发布前仍需的真实闭环
 
-| Adapter | Bytes | 脱敏占位符 | 凭据形态命中 | 本机/服务端 SHA-256 |
-| --- | ---: | ---: | ---: | --- |
-| API 管理器 2.0.3 | 8490 | 9 | 0 | `ADFB61AB59F4A325FF8B610F3BBC6DBAA881BB9323C197B2547BB9B9519A6665` |
-| 蚀心入魔·数据库 | 164534 | 1 | 0 | `8887C9333FAC3C8E5DECACF92EB8C2AA4ABF0654F4C8AB37F04A25B1C81C67E6` |
-| 梦境创客 | 7563 | 14 | 0 | `FA3A9B640C94FDD224BFC21820B3A3742C93088EF3A18262E8F530F1FEC7FD97` |
-| st-chatu8 | 640739 | 46 | 0 | `28C6D00BDF0935315C8878081B2DFD84BEF9BC09487267E84EF580F3FAEF524A` |
-| 酒馆助手三个脚本 | 650008 | 0 | 0 | `2D9B9388875A091354504B05B3363DC0D65BB4F193A070931A1611E51FF3B656` |
+按 `MANUAL_E2E.md` 在两台物理设备验证：
 
-st-chatu8 的真实快照标记 `manualTags.captured = true`，说明 WebView IndexedDB 读取成功；本机当前手动标签为 0 条。整个验证过程只输出计数、状态和哈希，未输出 payload 或凭据值。
+1. A 加密采集完整 Tavern Helper + API + Dream Global Skill + st workflow；
+2. TT-Sync A→B；
+3. B 正确口令恢复，验证 Global Skill 真文件和额外全局脚本可直接使用；
+4. 验证 B 独有脚本、Dream session/workspace 数据未被覆盖；
+5. 重复恢复为 `noop`；
+6. B 修改可移植内容后反向采集，完成 B→A；
+7. 最终双方 `nonSensitiveHash` 在相同可移植内容上收敛。
+
+在这一步完成前，应称 0.2.14 为“自动化验证完成、物理双设备待最终验收”，而不是“实机完全证明”。

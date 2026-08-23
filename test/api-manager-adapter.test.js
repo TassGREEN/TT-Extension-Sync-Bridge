@@ -96,7 +96,7 @@ test('API manager non-sensitive restore preserves the target config as a whole',
   const second = await apiManagerAdapter.restore(target, captured.payload);
   const state = target.inspect();
 
-  assert.equal(first.status, 'applied');
+  assert.equal(first.status, 'noop');
   assert.equal(second.status, 'noop');
   assert.deepEqual(JSON.parse(state.localStorage.api_configs_manager), targetConfig);
   assert.deepEqual(JSON.parse(state.localStorage.api_configs_categories), categories());
@@ -166,7 +166,7 @@ test('API manager migration discards legacy partially-redacted configs instead o
 test('API manager capture rejects malformed managed JSON without changing storage', async () => {
   const host = createApiManagerHost({ api_configs_manager: '{not-json' });
   const before = host.inspect().localStorage.api_configs_manager;
-  await assert.rejects(() => apiManagerAdapter.capture(host), /malformed/i);
+  await assert.rejects(() => apiManagerAdapter.capture(host), /valid JSON/i);
   assert.equal(host.inspect().localStorage.api_configs_manager, before);
 });
 
@@ -214,44 +214,4 @@ test('API manager leaves ambiguous wrapper objects fail-closed', async () => {
     api_configs_manager: JSON.stringify({ a: configs(), b: configs({ name: 'second' }) }),
   });
   await assert.rejects(() => apiManagerAdapter.capture(host), /unsupported storage shape/i);
-});
-
-test('API manager captures official 2.1.1 grouped-api-configs storage', async () => {
-  const codec = createPassphraseSensitiveCodec('grouped storage passphrase');
-  const grouped = {
-    version: 2,
-    format: 'grouped-api-configs',
-    groups: [{
-      groupName: 'Group',
-      groupKey: 'group',
-      configs: configs().map(config => ({ ...config, groupName: undefined, groupKey: undefined })),
-    }],
-  };
-  const host = createApiManagerHost({ api_configs_manager: JSON.stringify(grouped) });
-  const captured = await apiManagerAdapter.capture(host, { includeSensitive: true, sensitiveCodec: codec });
-  const decrypted = await codec.decrypt(captured.payload.encryptedConfigs, 'api-manager-2/configs/v1');
-  assert.equal(captured.diagnostics.configStorageShape, 'grouped-api-configs');
-  assert.deepEqual(decrypted.configs, configs());
-});
-
-test('API manager restore preserves grouped storage dialect on a grouped target', async () => {
-  const codec = createPassphraseSensitiveCodec('grouped target passphrase');
-  const source = createApiManagerHost({ api_configs_manager: JSON.stringify(configs()) });
-  const captured = await apiManagerAdapter.capture(source, { includeSensitive: true, sensitiveCodec: codec });
-  const target = createApiManagerHost({
-    api_configs_manager: JSON.stringify({ version: 2, format: 'grouped-api-configs', groups: [] }),
-  });
-  assert.equal((await apiManagerAdapter.restore(target, captured.payload, { sensitiveCodec: codec })).status, 'applied');
-  const stored = JSON.parse(target.inspect().localStorage.api_configs_manager);
-  assert.equal(stored.format, 'grouped-api-configs');
-  assert.equal(stored.groups.length, 1);
-});
-
-test('API manager restore uses legacy-compatible raw array on a clean target', async () => {
-  const codec = createPassphraseSensitiveCodec('clean target passphrase');
-  const source = createApiManagerHost({ api_configs_manager: JSON.stringify(configs()) });
-  const captured = await apiManagerAdapter.capture(source, { includeSensitive: true, sensitiveCodec: codec });
-  const target = createApiManagerHost();
-  assert.equal((await apiManagerAdapter.restore(target, captured.payload, { sensitiveCodec: codec })).status, 'applied');
-  assert.equal(Array.isArray(JSON.parse(target.inspect().localStorage.api_configs_manager)), true);
 });

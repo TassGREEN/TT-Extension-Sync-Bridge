@@ -3,7 +3,10 @@ import { isRedacted, mergeRedacted, redactClone } from '../core/redaction.js';
 import { isEncryptedEnvelope } from '../core/sensitive-envelope.js';
 
 export const DREAM_SETTINGS_KEY = 'dream-card-agent';
+export const DREAM_CACHE_KEY = 'dream-card-agent:settings:v4';
+export const DREAM_SETTINGS_CHANNEL = 'dream-card-agent:settings';
 export const DREAM_SCRIPT_ID = '41179c00-7593-4cf5-b32b-4d6bb3a6b0c2';
+const DREAM_SCRIPT_NAMES = new Set(['梦境创客', '梦境创客（TokenRhythm代理修复）']);
 const SUPPORTED_PLUGIN_DATA_VERSION = 4;
 const SENSITIVE_CONTEXT = 'dream-card-agent/providers/v1';
 const DEVICE_ONLY_PATHS = [
@@ -26,6 +29,78 @@ const SENSITIVE_KEY_PATTERNS = [
 
 function isPlainObject(value) {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function clone(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function revisionOf(value) {
+  return Number.isFinite(value?.syncRevision) ? Math.max(0, Number(value.syncRevision)) : 0;
+}
+
+function collectScriptRecords(trees) {
+  if (!Array.isArray(trees)) return [];
+  return trees.flatMap(tree => {
+    if (tree?.type === 'script') return [tree];
+    if (tree?.type === 'folder' && Array.isArray(tree.scripts)) {
+      return tree.scripts.filter(script => script?.type === 'script');
+    }
+    return [];
+  });
+}
+
+function hasDreamScript(host) {
+  if (typeof host.hasTavernScript === 'function' && host.hasTavernScript(DREAM_SCRIPT_ID)) return true;
+  if (typeof host.tavernHelperScripts?.get !== 'function') return false;
+  const result = host.tavernHelperScripts.get();
+  return Boolean(
+    result?.available
+    && collectScriptRecords(result.trees).some(script => DREAM_SCRIPT_NAMES.has(script?.name)),
+  );
+}
+
+function readCache(host) {
+  const raw = host.localStorage.get(DREAM_CACHE_KEY);
+  if (raw === null) return undefined;
+  try {
+    const parsed = JSON.parse(raw);
+    return isPlainObject(parsed) ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function readDreamState(host) {
+  const tavern = host.extensionSettings.get(DREAM_SETTINGS_KEY);
+  const validTavern = isPlainObject(tavern) ? tavern : undefined;
+  const cached = readCache(host);
+  const latest = cached && (!validTavern || revisionOf(cached) > revisionOf(validTavern)) ? cached : validTavern;
+  return {
+    tavern: validTavern,
+    cached,
+    latest: latest ? clone(latest) : undefined,
+    maxRevision: Math.max(revisionOf(validTavern), revisionOf(cached)),
+  };
+}
+
+function storesAligned(state, value) {
+  return Boolean(
+    state.tavern
+    && state.cached
+    && canonicalJson(state.tavern) === canonicalJson(value)
+    && canonicalJson(state.cached) === canonicalJson(value)
+  );
+}
+
+async function persistDreamSettings(host, settings) {
+  host.localStorage.set(DREAM_CACHE_KEY, JSON.stringify(settings));
+  host.extensionSettings.set(DREAM_SETTINGS_KEY, settings);
+  await host.saveSettings();
+  host.broadcast?.post?.(DREAM_SETTINGS_CHANNEL, {
+    revision: revisionOf(settings),
+    type: 'settings-updated',
+  });
 }
 
 function validatePayload(payload) {
@@ -122,7 +197,8 @@ export const dreamCardAgentAdapter = {
   },
 
   async capture(host, { includeSensitive = false, sensitiveCodec } = {}) {
-    const current = host.extensionSettings.get(DREAM_SETTINGS_KEY);
+    let state = readDreamState(host);
+    let current = state.latest;
     if (!isPlainObject(current)) {
       return {
         available: false,
@@ -136,8 +212,10 @@ export const dreamCardAgentAdapter = {
     }
     const repairedReferenceCount = repairLegacyCharacterStoreUrls(current);
     if (repairedReferenceCount > 0) {
-      host.extensionSettings.set(DREAM_SETTINGS_KEY, current);
-      await host.saveSettings();
+      current.syncRevision = state.maxRevision + 1;
+      await persistDreamSettings(host, current);
+      state = readDreamState(host);
+      current = state.latest;
     }
     if (includeSensitive && !sensitiveCodec?.encrypt) {
       throw new Error('An encryption passphrase is required for Dream creator sensitive sync');
@@ -145,7 +223,6 @@ export const dreamCardAgentAdapter = {
     const redacted = redactClone(
       { settings: current },
       {
-        includeSensitive: false,
         sensitiveKeyPatterns: SENSITIVE_KEY_PATTERNS,
         excludedPaths: [...DEVICE_ONLY_PATHS, ...providerSensitivePaths(current)],
       },
@@ -174,11 +251,10 @@ export const dreamCardAgentAdapter = {
     validatePayload(payload);
     const incomingSettings = await unlockedSettings(payload, sensitiveCodec);
     if (incomingSettings === null) return { status: 'locked', reason: 'passphrase-required' };
-    const current = host.extensionSettings.get(DREAM_SETTINGS_KEY);
+    const state = readDreamState(host);
+    const current = state.latest;
     if (!isPlainObject(current)) {
-      return typeof host.hasTavernScript === 'function' && host.hasTavernScript(DREAM_SCRIPT_ID)
-        ? { status: 'empty-target' }
-        : { status: 'missing-target' };
+      return hasDreamScript(host) ? { status: 'empty-target' } : { status: 'missing-target' };
     }
     if (current.version !== payload.pluginDataVersion) {
       return {
@@ -187,21 +263,21 @@ export const dreamCardAgentAdapter = {
       };
     }
     const restored = mergeDreamSettings(current, incomingSettings);
-    return { status: canonicalJson(current) === canonicalJson(restored) ? 'noop' : 'would-change' };
+    const contentEqual = canonicalJson(current) === canonicalJson(restored);
+    return { status: contentEqual && storesAligned(state, current) ? 'noop' : 'would-change' };
   },
 
   async restore(host, payload, { sensitiveCodec } = {}) {
     validatePayload(payload);
     const incomingSettings = await unlockedSettings(payload, sensitiveCodec);
     if (incomingSettings === null) return { status: 'locked', reason: 'passphrase-required' };
-    const current = host.extensionSettings.get(DREAM_SETTINGS_KEY);
+    const state = readDreamState(host);
+    const current = state.latest;
     if (!isPlainObject(current)) {
-      if (typeof host.hasTavernScript !== 'function' || !host.hasTavernScript(DREAM_SCRIPT_ID)) {
-        return { status: 'missing-target' };
-      }
+      if (!hasDreamScript(host)) return { status: 'missing-target' };
       const initialized = mergeDreamSettings(undefined, incomingSettings);
-      host.extensionSettings.set(DREAM_SETTINGS_KEY, initialized);
-      await host.saveSettings();
+      initialized.syncRevision = state.maxRevision + 1;
+      await persistDreamSettings(host, initialized);
       return { status: 'applied' };
     }
     if (current.version !== payload.pluginDataVersion) {
@@ -211,9 +287,10 @@ export const dreamCardAgentAdapter = {
       };
     }
     const restored = mergeDreamSettings(current, incomingSettings);
-    if (canonicalJson(current) === canonicalJson(restored)) return { status: 'noop' };
-    host.extensionSettings.set(DREAM_SETTINGS_KEY, restored);
-    await host.saveSettings();
+    const contentChanged = canonicalJson(current) !== canonicalJson(restored);
+    if (!contentChanged && storesAligned(state, current)) return { status: 'noop' };
+    restored.syncRevision = contentChanged ? state.maxRevision + 1 : revisionOf(current);
+    await persistDreamSettings(host, restored);
     return { status: 'applied' };
   },
 };

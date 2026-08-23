@@ -62,7 +62,7 @@ export function mountBridgeSettingsPanel(runtime) {
         <label class="checkbox_label"><input data-setting="masterEnabled" type="checkbox"> 总开关</label>
         <label class="checkbox_label"><input data-setting="autoCapture" type="checkbox"> 扩展设置加载完成后自动采集</label>
         <div class="ttsb-sensitive-box">
-          <label class="checkbox_label"><input data-setting="sensitiveDataSync" type="checkbox"> 加密同步梦境创客 Provider（API URL / Key）</label>
+          <label class="checkbox_label"><input data-setting="sensitiveDataSync" type="checkbox"> 加密同步敏感配置（API 管理器 / 梦境创客 / st-chatu8）</label>
           <input data-setting="sensitivePassphrase" type="password" autocomplete="off" minlength="8" placeholder="同步口令（至少 8 位）" disabled>
           <small>口令保存在本机 Bridge 专用 localStorage，不进入 TT 同步快照；另一台设备首次使用时需输入同一口令。</small>
           <button type="button" class="menu_button" data-action="forget-passphrase">忘记本机口令</button>
@@ -131,8 +131,7 @@ export function mountBridgeSettingsPanel(runtime) {
   async function captureEnabledAdapters(codec) {
     const output = [];
     for (const adapterId of enabledAdapterIds()) {
-      const includeSensitive = adapterId === 'dream-card-agent' && codec !== null;
-      output.push(...await runtime.controller.captureAll([adapterId], { includeSensitive, sensitiveCodec: codec }));
+      output.push(...await runtime.controller.captureAll([adapterId], { sensitiveCodec: codec }));
     }
     return output;
   }
@@ -295,7 +294,7 @@ export function mountBridgeSettingsPanel(runtime) {
       summary.textContent = hardConflicts.length ? '存在不可强制覆盖的脚本 ID 冲突。' : '没有待恢复内容。';
       return;
     }
-    if (!globalThis.confirm(`将恢复 ${candidates.length} 个 adapter。已解锁的梦境创客 Provider 将从加密快照恢复，确定继续吗？`)) return;
+    if (!globalThis.confirm(`将恢复 ${candidates.length} 个 adapter。已解锁的敏感配置将从加密快照恢复，确定继续吗？`)) return;
     const codec = sensitiveCodec();
     const results = await busy('正在恢复设置…', async () => {
       const output = [];

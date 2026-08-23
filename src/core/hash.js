@@ -1,4 +1,4 @@
-import { canonicalJson } from './canonical-json.js';
+import { strictCanonicalJson } from './canonical-json.js';
 
 function toHex(bytes) {
   return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
@@ -13,5 +13,5 @@ export async function sha256Text(text) {
 }
 
 export async function sha256Json(value) {
-  return sha256Text(canonicalJson(value));
+  return sha256Text(strictCanonicalJson(value));
 }

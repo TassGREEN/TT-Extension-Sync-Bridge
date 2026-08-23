@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  DREAM_CACHE_KEY,
   DREAM_SCRIPT_ID,
+  DREAM_SETTINGS_CHANNEL,
   DREAM_SETTINGS_KEY,
   dreamCardAgentAdapter,
 } from '../src/adapters/dream-card-agent-adapter.js';
@@ -57,7 +59,7 @@ test('dream creator captures user assets while excluding credentials and device 
   assert.equal(JSON.stringify(result.payload).includes('source-secret'), false);
 });
 
-test('dream creator restore preserves local credentials and device state', async () => {
+test('dream creator restore preserves local device state, increments revision, and aligns both stores', async () => {
   const source = createMemoryHost({ extensionSettings: { [DREAM_SETTINGS_KEY]: dreamSettings() } });
   const captured = await dreamCardAgentAdapter.capture(source);
   const target = createMemoryHost({
@@ -78,7 +80,9 @@ test('dream creator restore preserves local credentials and device state', async
 
   const first = await dreamCardAgentAdapter.restore(target, captured.payload);
   const second = await dreamCardAgentAdapter.restore(target, captured.payload);
-  const restored = target.inspect().extensionSettings[DREAM_SETTINGS_KEY];
+  const state = target.inspect();
+  const restored = state.extensionSettings[DREAM_SETTINGS_KEY];
+  const cached = JSON.parse(state.localStorage[DREAM_CACHE_KEY]);
 
   assert.equal(first.status, 'applied');
   assert.equal(second.status, 'noop');
@@ -86,8 +90,46 @@ test('dream creator restore preserves local credentials and device state', async
   assert.equal(restored.providers[0].apiKey, 'target-secret');
   assert.equal(restored.providers[0].baseUrl, 'https://target.private/v1');
   assert.deepEqual(restored.floatingButtonOffset, { x: 9, y: 8 });
-  assert.equal(restored.syncRevision, 7);
-  assert.equal(target.inspect().saveCount, 1);
+  assert.equal(restored.syncRevision, 8);
+  assert.deepEqual(cached, restored);
+  assert.equal(state.saveCount, 1);
+  assert.deepEqual(state.broadcasts, [{
+    channel: DREAM_SETTINGS_CHANNEL,
+    message: { revision: 8, type: 'settings-updated' },
+  }]);
+});
+
+test('dream creator overwrites a higher-revision blank cache with restored source data', async () => {
+  const codec = createPassphraseSensitiveCodec('dream dual store passphrase');
+  const sourceSettings = dreamSettings();
+  const source = createMemoryHost({ extensionSettings: { [DREAM_SETTINGS_KEY]: sourceSettings } });
+  const captured = await dreamCardAgentAdapter.capture(source, { includeSensitive: true, sensitiveCodec: codec });
+  const staleTavern = dreamSettings({ approvalMode: 'old', syncRevision: 2 });
+  const blankCache = dreamSettings({
+    approvalMode: 'fresh-default',
+    providers: [],
+    agentConfigurations: [],
+    globalSkills: {},
+    files: {},
+    workspaceFiles: {},
+    syncRevision: 9,
+  });
+  const target = createMemoryHost({
+    extensionSettings: { [DREAM_SETTINGS_KEY]: staleTavern },
+    localStorage: { [DREAM_CACHE_KEY]: JSON.stringify(blankCache) },
+  });
+
+  assert.equal((await dreamCardAgentAdapter.preview(target, captured.payload, { sensitiveCodec: codec })).status, 'would-change');
+  assert.equal((await dreamCardAgentAdapter.restore(target, captured.payload, { sensitiveCodec: codec })).status, 'applied');
+  const state = target.inspect();
+  const restored = state.extensionSettings[DREAM_SETTINGS_KEY];
+  const cached = JSON.parse(state.localStorage[DREAM_CACHE_KEY]);
+
+  assert.equal(restored.syncRevision, 10);
+  assert.equal(restored.approvalMode, sourceSettings.approvalMode);
+  assert.deepEqual(restored.globalSkills, sourceSettings.globalSkills);
+  assert.deepEqual(restored.providers, sourceSettings.providers);
+  assert.deepEqual(cached, restored);
 });
 
 test('dream creator refuses incompatible plugin data versions', async () => {
@@ -112,8 +154,11 @@ test('dream creator initializes a clean device when its stable script ID exists'
 
   assert.equal((await dreamCardAgentAdapter.preview(target, captured.payload)).status, 'empty-target');
   assert.equal((await dreamCardAgentAdapter.restore(target, captured.payload)).status, 'applied');
-  assert.equal(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].version, 4);
-  assert.equal(Object.hasOwn(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].providers[0], 'apiKey'), false);
+  const state = target.inspect();
+  assert.equal(state.extensionSettings[DREAM_SETTINGS_KEY].version, 4);
+  assert.equal(state.extensionSettings[DREAM_SETTINGS_KEY].syncRevision, 1);
+  assert.equal(Object.hasOwn(state.extensionSettings[DREAM_SETTINGS_KEY].providers[0], 'apiKey'), false);
+  assert.deepEqual(JSON.parse(state.localStorage[DREAM_CACHE_KEY]), state.extensionSettings[DREAM_SETTINGS_KEY]);
 });
 
 test('dream creator does not restore a provider whose required secrets are unavailable on a clean device', async () => {
@@ -258,10 +303,13 @@ test('dream creator repairs only a legacy missing metadata URL without reading s
 
   const captured = await dreamCardAgentAdapter.capture(host);
   const expectedUrl = '/user/files/DreamCreator--Meta--character_one.json';
+  const state = host.inspect();
 
   assert.equal(captured.payload.settings.characterStores[bindingId].url, expectedUrl);
-  assert.equal(host.inspect().extensionSettings[DREAM_SETTINGS_KEY].characterStores[bindingId].url, expectedUrl);
-  assert.equal(host.inspect().saveCount, 1);
+  assert.equal(state.extensionSettings[DREAM_SETTINGS_KEY].characterStores[bindingId].url, expectedUrl);
+  assert.equal(state.extensionSettings[DREAM_SETTINGS_KEY].syncRevision, 43);
+  assert.deepEqual(JSON.parse(state.localStorage[DREAM_CACHE_KEY]), state.extensionSettings[DREAM_SETTINGS_KEY]);
+  assert.equal(state.saveCount, 1);
   assert.equal(captured.diagnostics.repairedReferenceCount, 1);
 });
 

@@ -11,6 +11,7 @@ export function createMemoryHost({
   const settings = clone(extensionSettings);
   const storage = new Map(Object.entries(localStorage));
   const databases = clone(indexedDb);
+  const broadcasts = [];
   let saveCount = 0;
   let indexedDbWriteCount = 0;
 
@@ -51,6 +52,12 @@ export function createMemoryHost({
         return { available: true };
       },
     },
+    broadcast: {
+      post(channel, message) {
+        broadcasts.push({ channel, message: clone(message) });
+        return true;
+      },
+    },
     pluginVersion(pluginId) {
       return pluginVersions[pluginId] ?? null;
     },
@@ -64,6 +71,7 @@ export function createMemoryHost({
         saveCount,
         indexedDb: clone(databases),
         indexedDbWriteCount,
+        broadcasts: clone(broadcasts),
       };
     },
   };

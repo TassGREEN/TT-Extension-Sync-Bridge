@@ -11,7 +11,7 @@
 
 Bridge 的浏览器入口只接触目标 adapter 明确列出的 `extension_settings` / localStorage / IndexedDB 数据、酒馆助手公共脚本 API、TT Extension Store，以及梦境创客 Global Skill 已在设置中明确引用的 `/user/files/` 文件。
 
-Bridge 的文件 host 不是通用文件浏览器：读取/删除只接受 `/user/files/` URL，上传只接受不含目录分隔符的安全 basename。Dream adapter 也只根据 `globalSkills` 索引读取 `SKILL.md` 和它列出的资源文件，不枚举文件目录。
+Bridge 的文件 host 不是通用文件浏览器：读取/删除只接受 `/user/files/<安全文件名>` URL，上传只接受不含目录分隔符、路径穿越或 query/hash 的安全 basename。Dream adapter 也只根据 `globalSkills` 索引读取 `SKILL.md` 和它列出的资源文件，不枚举文件目录。
 
 早期版本遗留的梦境创客 `characterStores.*.url` 修复只根据设置内已有 binding ID 和源码固定命名规则重建本机路径；不下载、解析或输出索引/会话文件内容。修复后的字段也不会进入新版可移植快照。
 
@@ -49,7 +49,7 @@ Global Skill 的源设备 `/user/files/...` URL 不视为可移植身份。采�
 - 未跟踪本地差异不会自动覆盖。
 - 未知 snapshot/schema/adapter/plugin 数据版本不覆盖。
 - 不提供未确认的“覆盖全部设置”。
-- 酒馆助手自动采集检测到脚本集合相对已有完整快照缩水时返回 `deferred`，避免设备初始化中的半成品污染完整快照。用户明确点击“立即采集”时可允许缩水，以同步主动删除后的新状态。
+- 酒馆助手正常自动/手动采集检测到脚本集合相对已有完整快照缩水时都会返回 `deferred`，避免设备初始化中的半成品污染完整快照；脚本删除目前不作为跨设备同步操作传播。
 - 酒馆助手恢复必须通过公共脚本 API 更新内部权威 store；接口未就绪时只返回等待状态，不直接写底层 `extension_settings`。
 - 酒馆助手恢复采用增量合并，不删除目标设备独有脚本；已知数据库/API/梦境创客脚本支持别名匹配，无法唯一判定的逻辑目标进入硬冲突。
 

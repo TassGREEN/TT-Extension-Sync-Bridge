@@ -1,5 +1,5 @@
 import { canonicalJson } from '../core/canonical-json.js';
-import { isRedacted, mergeRedacted, redactClone } from '../core/redaction.js';
+import { isRedacted, mergeRedacted, redactClone, stripRedacted } from '../core/redaction.js';
 import { isEncryptedEnvelope } from '../core/sensitive-envelope.js';
 
 export const DREAM_SETTINGS_KEY = 'dream-card-agent';
@@ -8,11 +8,13 @@ export const DREAM_SETTINGS_CHANNEL = 'dream-card-agent:settings';
 export const DREAM_SCRIPT_ID = '41179c00-7593-4cf5-b32b-4d6bb3a6b0c2';
 const DREAM_SCRIPT_NAMES = new Set(['梦境创客', '梦境创客（TokenRhythm代理修复）']);
 const SUPPORTED_PLUGIN_DATA_VERSION = 4;
-const SENSITIVE_CONTEXT = 'dream-card-agent/providers/v1';
+const LEGACY_PROVIDER_CONTEXT = 'dream-card-agent/providers/v1';
+const SENSITIVE_CONTEXT = 'dream-card-agent/settings/v2';
 const DEVICE_ONLY_PATHS = [
   '$.settings.floatingButtonOffset',
   '$.settings.syncRevision',
 ];
+const DEVICE_ONLY_KEYS = new Set(DEVICE_ONLY_PATHS.map(path => path.slice('$.settings.'.length)));
 const SENSITIVE_KEY_PATTERNS = [
   /^api[_-]?key$/i,
   /token/i,
@@ -104,7 +106,7 @@ async function persistDreamSettings(host, settings) {
 }
 
 function validatePayload(payload) {
-  if (!isPlainObject(payload) || payload.dataVersion !== 2 || !isPlainObject(payload.settings)) {
+  if (!isPlainObject(payload) || payload.dataVersion !== 3 || !isPlainObject(payload.settings)) {
     throw new TypeError('Dream creator payload is invalid');
   }
   if (payload.pluginDataVersion !== SUPPORTED_PLUGIN_DATA_VERSION) {
@@ -114,7 +116,13 @@ function validatePayload(payload) {
     throw new Error('Dream creator payload version does not match its envelope');
   }
   if (payload.encryptedProviders !== undefined && !isEncryptedEnvelope(payload.encryptedProviders)) {
-    throw new TypeError('Dream creator encrypted provider payload is invalid');
+    throw new TypeError('Dream creator legacy encrypted provider payload is invalid');
+  }
+  if (payload.encryptedSettings !== undefined && !isEncryptedEnvelope(payload.encryptedSettings)) {
+    throw new TypeError('Dream creator encrypted settings payload is invalid');
+  }
+  if (payload.encryptedProviders !== undefined && payload.encryptedSettings !== undefined) {
+    throw new TypeError('Dream creator payload cannot contain both encrypted settings formats');
   }
 }
 
@@ -124,6 +132,18 @@ function providerSensitivePaths(settings) {
     `$.settings.providers[${index}].baseURL`,
     `$.settings.providers[${index}].baseUrl`,
   ]);
+}
+
+function portableSettings(settings) {
+  const portableRedacted = redactClone(
+    { settings },
+    { excludedPaths: DEVICE_ONLY_PATHS },
+  );
+  const portable = stripRedacted(portableRedacted.value);
+  if (!isPlainObject(portable?.settings)) {
+    throw new TypeError('Unable to build portable Dream creator settings');
+  }
+  return portable.settings;
 }
 
 function repairLegacyCharacterStoreUrls(settings) {
@@ -174,26 +194,49 @@ function mergeDreamSettings(current, incoming) {
   return restored;
 }
 
-async function unlockedSettings(payload, sensitiveCodec) {
-  if (payload.encryptedProviders === undefined) return payload.settings;
-  if (!sensitiveCodec?.decrypt) return null;
-  const sensitive = await sensitiveCodec.decrypt(payload.encryptedProviders, SENSITIVE_CONTEXT);
-  if (!isPlainObject(sensitive) || !Array.isArray(sensitive.providers)) {
-    throw new TypeError('Dream creator decrypted provider payload is invalid');
+function mergePortableSettings(current, incoming) {
+  const restored = clone(incoming);
+  const local = isPlainObject(current) ? current : {};
+  for (const key of DEVICE_ONLY_KEYS) {
+    if (Object.hasOwn(local, key)) restored[key] = clone(local[key]);
+    else delete restored[key];
   }
-  return { ...payload.settings, providers: sensitive.providers };
+  return restored;
+}
+
+async function unlockedSettings(payload, sensitiveCodec) {
+  if (payload.encryptedSettings !== undefined) {
+    if (!sensitiveCodec?.decrypt) return null;
+    const sensitive = await sensitiveCodec.decrypt(payload.encryptedSettings, SENSITIVE_CONTEXT);
+    if (!isPlainObject(sensitive) || !isPlainObject(sensitive.settings)) {
+      throw new TypeError('Dream creator decrypted settings payload is invalid');
+    }
+    return { settings: sensitive.settings, fullPortable: true };
+  }
+  if (payload.encryptedProviders !== undefined) {
+    if (!sensitiveCodec?.decrypt) return null;
+    const sensitive = await sensitiveCodec.decrypt(payload.encryptedProviders, LEGACY_PROVIDER_CONTEXT);
+    if (!isPlainObject(sensitive) || !Array.isArray(sensitive.providers)) {
+      throw new TypeError('Dream creator decrypted provider payload is invalid');
+    }
+    return { settings: { ...payload.settings, providers: sensitive.providers }, fullPortable: false };
+  }
+  return { settings: payload.settings, fullPortable: false };
 }
 
 export const dreamCardAgentAdapter = {
   id: 'dream-card-agent',
   label: '梦境创客',
-  version: 2,
+  version: 3,
 
   migratePayload(payload, fromVersion) {
-    if (fromVersion !== 1 || !isPlainObject(payload) || payload.dataVersion !== 1) {
-      throw new Error(`Unsupported dream creator adapter migration from version ${String(fromVersion)}`);
+    if (fromVersion === 1 && isPlainObject(payload) && payload.dataVersion === 1) {
+      return { ...payload, dataVersion: 3 };
     }
-    return { ...payload, dataVersion: 2 };
+    if (fromVersion === 2 && isPlainObject(payload) && payload.dataVersion === 2) {
+      return { ...payload, dataVersion: 3 };
+    }
+    throw new Error(`Unsupported dream creator adapter migration from version ${String(fromVersion)}`);
   },
 
   async capture(host, { includeSensitive = false, sensitiveCodec } = {}) {
@@ -228,11 +271,16 @@ export const dreamCardAgentAdapter = {
       },
     );
     const payload = {
-      dataVersion: 2,
+      dataVersion: 3,
       pluginDataVersion: current.version,
       settings: redacted.value.settings,
       ...(includeSensitive
-        ? { encryptedProviders: await sensitiveCodec.encrypt({ providers: current.providers ?? [] }, SENSITIVE_CONTEXT) }
+        ? {
+            encryptedSettings: await sensitiveCodec.encrypt(
+              { settings: portableSettings(current) },
+              SENSITIVE_CONTEXT,
+            ),
+          }
         : {}),
     };
     validatePayload(payload);
@@ -249,8 +297,8 @@ export const dreamCardAgentAdapter = {
 
   async preview(host, payload, { sensitiveCodec } = {}) {
     validatePayload(payload);
-    const incomingSettings = await unlockedSettings(payload, sensitiveCodec);
-    if (incomingSettings === null) return { status: 'locked', reason: 'passphrase-required' };
+    const unlocked = await unlockedSettings(payload, sensitiveCodec);
+    if (unlocked === null) return { status: 'locked', reason: 'passphrase-required' };
     const state = readDreamState(host);
     const current = state.latest;
     if (!isPlainObject(current)) {
@@ -262,20 +310,24 @@ export const dreamCardAgentAdapter = {
         message: `Target dream-card-agent version ${String(current.version)} is not supported`,
       };
     }
-    const restored = mergeDreamSettings(current, incomingSettings);
+    const restored = unlocked.fullPortable
+      ? mergePortableSettings(current, unlocked.settings)
+      : mergeDreamSettings(current, unlocked.settings);
     const contentEqual = canonicalJson(current) === canonicalJson(restored);
     return { status: contentEqual && storesAligned(state, current) ? 'noop' : 'would-change' };
   },
 
   async restore(host, payload, { sensitiveCodec } = {}) {
     validatePayload(payload);
-    const incomingSettings = await unlockedSettings(payload, sensitiveCodec);
-    if (incomingSettings === null) return { status: 'locked', reason: 'passphrase-required' };
+    const unlocked = await unlockedSettings(payload, sensitiveCodec);
+    if (unlocked === null) return { status: 'locked', reason: 'passphrase-required' };
     const state = readDreamState(host);
     const current = state.latest;
     if (!isPlainObject(current)) {
       if (!hasDreamScript(host)) return { status: 'missing-target' };
-      const initialized = mergeDreamSettings(undefined, incomingSettings);
+      const initialized = unlocked.fullPortable
+        ? mergePortableSettings(undefined, unlocked.settings)
+        : mergeDreamSettings(undefined, unlocked.settings);
       initialized.syncRevision = state.maxRevision + 1;
       await persistDreamSettings(host, initialized);
       return { status: 'applied' };
@@ -286,7 +338,9 @@ export const dreamCardAgentAdapter = {
         message: `Target dream-card-agent version ${String(current.version)} is not supported`,
       };
     }
-    const restored = mergeDreamSettings(current, incomingSettings);
+    const restored = unlocked.fullPortable
+      ? mergePortableSettings(current, unlocked.settings)
+      : mergeDreamSettings(current, unlocked.settings);
     const contentChanged = canonicalJson(current) !== canonicalJson(restored);
     if (!contentChanged && storesAligned(state, current)) return { status: 'noop' };
     restored.syncRevision = contentChanged ? state.maxRevision + 1 : revisionOf(current);

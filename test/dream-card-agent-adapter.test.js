@@ -20,10 +20,10 @@ function dreamSettings(overrides = {}) {
     activeThemeId: 'dark',
     agentConfigurations: [{ id: 'agent-1', name: 'Writer', providerId: 'provider-1' }],
     approvalMode: 'ask',
-    builtinSkillPackages: { builtin: { enabled: true } },
-    characterStores: { charA: { notes: 'user-created' } },
-    files: { 'guide.md': '# guide' },
-    globalSkills: { polish: { prompt: 'polish this' } },
+    builtinSkillPackages: {},
+    characterStores: {},
+    files: {},
+    globalSkills: {},
     presetProfiles: [{ id: 'preset-1', name: 'Default' }],
     providers: [
       {
@@ -34,28 +34,32 @@ function dreamSettings(overrides = {}) {
         baseUrl: 'https://source.private/v1',
       },
     ],
-    workspaceFiles: { 'workflow.json': '{"steps":[]}' },
+    workspaceFiles: {},
     floatingButtonOffset: { x: 100, y: 200 },
     syncRevision: 42,
     ...overrides,
   };
 }
 
-test('dream creator captures user assets while excluding credentials and device state', async () => {
+test('dream creator captures portable settings while excluding credentials and local file indexes', async () => {
   const host = createMemoryHost({ extensionSettings: { [DREAM_SETTINGS_KEY]: dreamSettings() } });
 
   const result = await dreamCardAgentAdapter.capture(host, { includeSensitive: false });
   const provider = result.payload.settings.providers[0];
 
   assert.equal(result.sourceVersion, '4');
+  assert.equal(result.payload.dataVersion, 4);
   assert.equal(result.payload.pluginDataVersion, 4);
   assert.equal(provider.model, 'model-a');
   assert.equal(isRedacted(provider.apiKey), true);
   assert.equal(isRedacted(provider.baseUrl), true);
   assert.equal(isRedacted(result.payload.settings.floatingButtonOffset), true);
   assert.equal(isRedacted(result.payload.settings.syncRevision), true);
-  assert.equal(result.payload.settings.files['guide.md'], '# guide');
-  assert.equal(result.payload.settings.globalSkills.polish.prompt, 'polish this');
+  assert.equal(isRedacted(result.payload.settings.characterStores), true);
+  assert.equal(isRedacted(result.payload.settings.workspaceFiles), true);
+  assert.equal(isRedacted(result.payload.settings.builtinSkillPackages), true);
+  assert.equal(isRedacted(result.payload.settings.files), true);
+  assert.equal(isRedacted(result.payload.settings.globalSkills), true);
   assert.equal(JSON.stringify(result.payload).includes('source-secret'), false);
 });
 
@@ -192,7 +196,7 @@ test('dream creator does not restore a provider whose required secrets are unava
   assert.deepEqual(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].providers, []);
 });
 
-test('dream creator keeps TT file references while still redacting provider URLs', async () => {
+test('dream creator excludes local TT file references from the public snapshot', async () => {
   const source = createMemoryHost({
     extensionSettings: {
       [DREAM_SETTINGS_KEY]: dreamSettings({
@@ -200,7 +204,7 @@ test('dream creator keeps TT file references while still redacting provider URLs
           'binding-1': {
             bindingId: 'binding-1',
             revision: 1,
-            sha256: 'meta-hash',
+            sha256: 'a'.repeat(64),
             size: 735,
             updatedAt: 1,
             url: '/user/files/DreamCreator--Meta--binding-1.json',
@@ -221,21 +225,16 @@ test('dream creator keeps TT file references while still redacting provider URLs
 
   const result = await dreamCardAgentAdapter.capture(source);
 
-  assert.equal(
-    result.payload.settings.characterStores['binding-1'].url,
-    '/user/files/DreamCreator--Meta--binding-1.json',
-  );
-  assert.equal(
-    result.payload.settings.files['workspace-1'].url,
-    '/user/files/DreamCreator--Blob--binding-1--workspace-1.bin',
-  );
+  assert.equal(isRedacted(result.payload.settings.characterStores), true);
+  assert.equal(isRedacted(result.payload.settings.files), true);
   assert.equal(isRedacted(result.payload.settings.providers[0].baseUrl), true);
+  assert.equal(JSON.stringify(result.payload).includes('DreamCreator--Meta--binding-1.json'), false);
+  assert.equal(JSON.stringify(result.payload).includes('DreamCreator--Blob--binding-1--workspace-1.bin'), false);
 });
 
-test('dream creator encrypts complete portable settings and restores them only with the passphrase', async () => {
+test('dream creator encrypts portable settings and leaves session-bound workspace state local', async () => {
   const passphrase = 'portable bridge passphrase';
   const sourceSettings = dreamSettings({
-    globalSkills: { portable: { prompt: 'source-skill' } },
     workspaceFiles: {
       portable: {
         fileId: 'portable',
@@ -243,7 +242,7 @@ test('dream creator encrypts complete portable settings and restores them only w
         logicalPath: 'portable.json',
         mediaType: 'application/json',
         name: 'portable.json',
-        referencedSessionIds: [],
+        referencedSessionIds: ['source-session'],
         scope: 'global-persistent',
         sha256: 'b'.repeat(64),
         size: 64,
@@ -274,13 +273,15 @@ test('dream creator encrypts complete portable settings and restores them only w
 
   const captured = await dreamCardAgentAdapter.capture(source, { includeSensitive: true, sensitiveCodec: codec });
   const serialized = JSON.stringify(captured.payload);
+  const decrypted = await codec.decrypt(captured.payload.encryptedSettings, 'dream-card-agent/settings/v2');
 
-  assert.equal(captured.payload.dataVersion, 3);
+  assert.equal(captured.payload.dataVersion, 4);
   assert.equal(captured.payload.encryptedSettings.$ttSyncBridge, 'encrypted-v1');
   assert.equal(serialized.includes('https://source.private/v1'), false);
   assert.equal(serialized.includes('dream-owned-secret-payload'), false);
   assert.equal(serialized.includes('model-secret'), false);
   assert.equal(serialized.includes(passphrase), false);
+  assert.equal(Object.hasOwn(decrypted.settings, 'workspaceFiles'), false);
 
   const target = createMemoryHost();
   target.hasTavernScript = id => id === DREAM_SCRIPT_ID;
@@ -291,8 +292,8 @@ test('dream creator encrypts complete portable settings and restores them only w
   assert.equal((await dreamCardAgentAdapter.restore(target, captured.payload, { sensitiveCodec: codec })).status, 'applied');
   const restored = target.inspect().extensionSettings[DREAM_SETTINGS_KEY];
   assert.deepEqual(restored.providers, sourceSettings.providers);
-  assert.deepEqual(restored.globalSkills, sourceSettings.globalSkills);
-  assert.deepEqual(restored.workspaceFiles, sourceSettings.workspaceFiles);
+  assert.deepEqual(restored.globalSkills, {});
+  assert.deepEqual(restored.workspaceFiles, {});
 });
 
 test('dream creator fails closed when sensitive capture has no encryption codec', async () => {
@@ -325,7 +326,7 @@ test('dream creator repairs only a legacy missing metadata URL without reading s
   const expectedUrl = '/user/files/DreamCreator--Meta--character_one.json';
   const state = host.inspect();
 
-  assert.equal(captured.payload.settings.characterStores[bindingId].url, expectedUrl);
+  assert.equal(isRedacted(captured.payload.settings.characterStores), true);
   assert.equal(state.extensionSettings[DREAM_SETTINGS_KEY].characterStores[bindingId].url, expectedUrl);
   assert.equal(state.extensionSettings[DREAM_SETTINGS_KEY].syncRevision, 43);
   assert.deepEqual(JSON.parse(state.localStorage[DREAM_CACHE_KEY]), state.extensionSettings[DREAM_SETTINGS_KEY]);
@@ -343,8 +344,10 @@ test('dream creator does not invent a metadata URL for an incomplete unknown rec
   });
 
   const captured = await dreamCardAgentAdapter.capture(host);
+  const state = host.inspect();
 
-  assert.equal(Object.hasOwn(captured.payload.settings.characterStores.unknown, 'url'), false);
-  assert.equal(host.inspect().saveCount, 0);
+  assert.equal(isRedacted(captured.payload.settings.characterStores), true);
+  assert.equal(Object.hasOwn(state.extensionSettings[DREAM_SETTINGS_KEY].characterStores.unknown, 'url'), false);
+  assert.equal(state.saveCount, 0);
   assert.equal(captured.diagnostics.repairedReferenceCount, 0);
 });

@@ -2,6 +2,8 @@ import { createSnapshot, verifySnapshot } from './snapshot.js';
 import { sha256Json } from './hash.js';
 import { stripRedacted } from './redaction.js';
 
+const SENSITIVE_ADAPTER_IDS = new Set(['api-manager-2', 'dream-card-agent', 'st-chatu8']);
+
 async function payloadForSnapshot(adapter, snapshot) {
   if (snapshot.adapterVersion === adapter.version) return snapshot.payload;
   if (typeof adapter.migratePayload !== 'function') {
@@ -41,7 +43,15 @@ export class BridgeController {
 
   async capture(adapterId, { includeSensitive = false, sensitiveCodec } = {}) {
     const adapter = this.getAdapter(adapterId);
-    const captured = await adapter.capture(this.host, { includeSensitive, sensitiveCodec });
+    const effectiveIncludeSensitive = includeSensitive || (
+      sensitiveCodec !== null
+      && sensitiveCodec !== undefined
+      && SENSITIVE_ADAPTER_IDS.has(adapterId)
+    );
+    const captured = await adapter.capture(this.host, {
+      includeSensitive: effectiveIncludeSensitive,
+      sensitiveCodec,
+    });
     if (!captured.available) {
       const result = { status: 'missing-target', adapterId, diagnostics: captured.diagnostics };
       this.localState.setAdapterState(adapterId, { lastResult: result, lastCheckedAt: this.now() });
@@ -65,7 +75,7 @@ export class BridgeController {
     const previous = await this.snapshotStore.getSnapshot(adapterId);
     if (previous !== null) {
       await verifySnapshot(previous, { adapterId, adapterVersion: adapter.version });
-      if (previous.sensitiveDataIncluded && !includeSensitive) {
+      if (previous.sensitiveDataIncluded && !effectiveIncludeSensitive) {
         throw new Error('Refusing to replace an encrypted snapshot without sensitive sync enabled');
       }
     }
@@ -76,7 +86,7 @@ export class BridgeController {
       sourceRevision: nextRevision,
       capturedAt: this.now(),
       deviceId: this.deviceId,
-      sensitiveDataIncluded: includeSensitive,
+      sensitiveDataIncluded: effectiveIncludeSensitive,
       payload: captured.payload,
     });
 

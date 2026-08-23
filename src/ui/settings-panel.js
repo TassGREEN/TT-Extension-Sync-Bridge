@@ -97,7 +97,16 @@ export function mountBridgeSettingsPanel(runtime) {
           <button type="button" class="menu_button" data-action="copy-diagnostics">复制诊断日志</button>
         </div>
         <div class="ttsb-summary" role="status"></div>
-        <div class="ttsb-status-list"></div>
+
+        <div class="ttsb-overview" aria-live="polite">
+          <span>最近更新</span>
+          <strong data-latest-update>—</strong>
+        </div>
+
+        <details class="ttsb-subdrawer ttsb-status-drawer">
+          <summary>同步详情 <small data-status-count></small></summary>
+          <div class="ttsb-status-list"></div>
+        </details>
 
         <details class="ttsb-subdrawer ttsb-diagnostics-drawer" data-diagnostics-drawer>
           <summary>诊断日志</summary>
@@ -108,6 +117,8 @@ export function mountBridgeSettingsPanel(runtime) {
 
   const adaptersContainer = root.querySelector('.ttsb-adapters');
   const statusContainer = root.querySelector('.ttsb-status-list');
+  const latestUpdate = root.querySelector('[data-latest-update]');
+  const statusCount = root.querySelector('[data-status-count]');
   const summary = root.querySelector('.ttsb-summary');
   const restoreButton = root.querySelector('[data-action="restore"]');
   const sensitiveToggle = root.querySelector('[data-setting="sensitiveDataSync"]');
@@ -180,11 +191,17 @@ export function mountBridgeSettingsPanel(runtime) {
 
   async function refreshStatus() {
     statusContainer.replaceChildren();
+    let latestCapturedAt = null;
+    let trackedCount = 0;
+
     for (const adapter of runtime.controller.listAdapters()) {
       const snapshot = await runtime.snapshotStore.getSnapshot(adapter.id).catch(() => null);
       const state = runtime.localState.getAdapterState(adapter.id);
       const preview = previews?.find(item => item.adapterId === adapter.id);
       const effectiveStatus = preview?.status ?? state.lastResult?.status ?? 'unknown';
+      const lastCapture = latestTime(state.lastCapturedAt, snapshot?.capturedAt);
+      latestCapturedAt = latestTime(latestCapturedAt, lastCapture);
+      trackedCount += 1;
 
       const row = document.createElement('div');
       row.className = `ttsb-status ttsb-status-${effectiveStatus}`;
@@ -198,7 +215,6 @@ export function mountBridgeSettingsPanel(runtime) {
 
       const metadata = document.createElement('small');
       metadata.className = 'ttsb-status-meta';
-      const lastCapture = latestTime(state.lastCapturedAt, state.lastCheckedAt, snapshot?.capturedAt);
       const encrypted = snapshot?.sensitiveDataIncluded ? ' · 加密快照' : '';
       metadata.textContent = snapshot
         ? `上次采集：${formatTime(lastCapture)}${encrypted}`
@@ -215,6 +231,9 @@ export function mountBridgeSettingsPanel(runtime) {
       }
       statusContainer.append(row);
     }
+
+    latestUpdate.textContent = latestCapturedAt ? formatTime(latestCapturedAt) : '尚无快照';
+    statusCount.textContent = trackedCount > 0 ? `${trackedCount} 项` : '';
   }
 
   async function busy(label, operation) {

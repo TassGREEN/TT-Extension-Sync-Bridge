@@ -202,6 +202,12 @@ function mergeDreamSettings(current, incoming) {
   const restored = mergeRedacted(current, incoming, {
     preserveLocalKeyPatterns: SENSITIVE_KEY_PATTERNS,
   });
+
+  for (const key of [...LOCAL_ONLY_KEYS, 'globalSkills']) {
+    if (Object.hasOwn(local, key)) restored[key] = clone(local[key]);
+    else delete restored[key];
+  }
+
   if (!Array.isArray(restored?.providers) || !Array.isArray(incoming?.providers)) return restored;
 
   const localProviders = new Map(

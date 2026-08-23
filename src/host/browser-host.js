@@ -11,24 +11,37 @@ function flattenScripts(trees) {
   });
 }
 
-function requireUserFileUrl(url) {
-  if (typeof url !== 'string' || !url.startsWith('/user/files/')) {
-    throw new TypeError('Only /user/files/ paths may be accessed by the bridge file host');
-  }
-  return url;
-}
-
 function requireUserFileName(name) {
+  if (typeof name !== 'string' || name.trim() === '' || /[?#\u0000-\u001f\u007f]/u.test(name)) {
+    throw new TypeError('Bridge file uploads require a safe basename');
+  }
+  let decoded;
+  try {
+    decoded = decodeURIComponent(name);
+  } catch {
+    throw new TypeError('Bridge file uploads require a safe basename');
+  }
   if (
-    typeof name !== 'string'
-    || name.trim() === ''
-    || name === '.'
+    name === '.'
     || name === '..'
+    || decoded === '.'
+    || decoded === '..'
     || /[\\/]/u.test(name)
+    || /[\\/\u0000-\u001f\u007f]/u.test(decoded)
   ) {
     throw new TypeError('Bridge file uploads require a safe basename');
   }
   return name;
+}
+
+function requireUserFileUrl(url) {
+  const prefix = '/user/files/';
+  if (typeof url !== 'string' || !url.startsWith(prefix)) {
+    throw new TypeError('Only /user/files/ paths may be accessed by the bridge file host');
+  }
+  const name = url.slice(prefix.length);
+  requireUserFileName(name);
+  return `${prefix}${name}`;
 }
 
 function bytesToBase64(bytes) {
@@ -129,10 +142,11 @@ export function createBrowserHost({
         });
         if (!response.ok) throw new Error(`Bridge user file upload failed: ${response.status}`);
         const result = await response.json();
-        if (typeof result?.path !== 'string' || !result.path.startsWith('/user/files/')) {
+        try {
+          return requireUserFileUrl(result?.path);
+        } catch {
           throw new Error('Bridge user file upload response is invalid');
         }
-        return result.path;
       },
       async delete(url) {
         const response = await fetchImpl('/api/files/delete', {

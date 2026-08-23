@@ -54,11 +54,23 @@ function scriptRecord(target) {
   };
 }
 
+const extraScript = {
+  type: 'script',
+  enabled: true,
+  id: 'extra-global-script-id',
+  name: '额外全局脚本',
+  content: 'console.log("extra-global-script-body")',
+  info: '',
+  button: { enabled: true, buttons: [] },
+  data: {},
+  export_with: { data: true, button: true },
+};
+
 function sourceHost() {
   return createMemoryHost({
     extensionSettings: {
       [TAVERN_HELPER_SETTINGS_KEY]: {
-        script: { scripts: TARGET_TAVERN_SCRIPTS.map(scriptRecord) },
+        script: { scripts: [...TARGET_TAVERN_SCRIPTS.map(scriptRecord), extraScript] },
       },
       [DATABASE_SETTINGS_ROOT]: {
         [DATABASE_SETTINGS_KEY]: {
@@ -74,7 +86,11 @@ function sourceHost() {
         activeAgentConfigurationId: 'agent-1',
         providers: [{ id: 'provider-1', model: 'model-a', apiKey: 'source-secret' }],
         agentConfigurations: [{ id: 'agent-1', providerId: 'provider-1' }],
-        globalSkills: { polish: { prompt: 'polish' } },
+        globalSkills: {},
+        files: {},
+        characterStores: {},
+        workspaceFiles: {},
+        builtinSkillPackages: {},
         floatingButtonOffset: { x: 1, y: 2 },
         syncRevision: 9,
       },
@@ -86,6 +102,10 @@ function sourceHost() {
         novelaisite: 'https://novelai.source.private',
         personaProfiles: { p1: { id: 'p1', prompt: 'persona' } },
         workerid: 'source-worker',
+        worker: '{"workflow":"source-active-workflow"}',
+        editWorkerid: 'source-edit-worker',
+        editWorker: '{"workflow":"source-edit-workflow"}',
+        workers: { preset: '{"workflow":"source-preset-workflow"}' },
       },
     },
     localStorage: {
@@ -159,7 +179,7 @@ test('all adapters complete an encrypted A to B roundtrip without plaintext secr
 
   const captured = await sourceController.captureAll(adapters.map(adapter => adapter.id), { sensitiveCodec: codec });
   assert.deepEqual(captured.map(result => result.status), adapters.map(() => 'captured'));
-  for (const id of ['api-manager-2', 'dream-card-agent', 'st-chatu8']) {
+  for (const id of ['tavern-helper-global-scripts', 'api-manager-2', 'dream-card-agent', 'st-chatu8']) {
     assert.equal(snapshotStore.values.get(id).sensitiveDataIncluded, true);
   }
   const serializedSnapshots = JSON.stringify([...snapshotStore.values.values()]);
@@ -168,6 +188,8 @@ test('all adapters complete an encrypted A to B roundtrip without plaintext secr
   assert.equal(serializedSnapshots.includes('source-token'), false);
   assert.equal(serializedSnapshots.includes('api.source.private'), false);
   assert.equal(serializedSnapshots.includes('novelai.source.private'), false);
+  assert.equal(serializedSnapshots.includes('extra-global-script-body'), false);
+  assert.equal(serializedSnapshots.includes('source-preset-workflow'), false);
 
   const sourceHashes = Object.fromEntries(
     [...snapshotStore.values].map(([id, snapshot]) => [id, snapshot.nonSensitiveHash]),
@@ -183,14 +205,24 @@ test('all adapters complete an encrypted A to B roundtrip without plaintext secr
 
   const targetState = target.inspect();
   const scripts = targetState.extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts;
-  assert.deepEqual(scripts.map(script => script.id).sort(), TARGET_TAVERN_SCRIPTS.map(item => item.id).sort());
-  assert.equal(new Set(scripts.map(script => script.id)).size, 3);
+  assert.deepEqual(
+    scripts.map(script => script.id).sort(),
+    [...TARGET_TAVERN_SCRIPTS.map(item => item.id), extraScript.id].sort(),
+  );
+  assert.equal(new Set(scripts.map(script => script.id)).size, 4);
+  assert.equal(scripts.find(script => script.id === extraScript.id).content, extraScript.content);
   assert.equal(JSON.parse(targetState.localStorage.api_configs_manager)[0].apiKeys[0].key, 'source-key');
   assert.equal(JSON.parse(targetState.localStorage.api_configs_manager)[0].customUrl, 'https://api.source.private/v1');
   assert.equal(targetState.extensionSettings[DREAM_SETTINGS_KEY].providers[0].apiKey, 'source-secret');
   assert.equal(targetState.extensionSettings[ST_CHATU8_SETTINGS_KEY].ai_token, 'source-token');
   assert.equal(targetState.extensionSettings[ST_CHATU8_SETTINGS_KEY].novelaiApi, 'source-novelai-key');
-  assert.equal(Object.hasOwn(targetState.extensionSettings[ST_CHATU8_SETTINGS_KEY], 'workerid'), false);
+  assert.equal(targetState.extensionSettings[ST_CHATU8_SETTINGS_KEY].workerid, 'source-worker');
+  assert.equal(targetState.extensionSettings[ST_CHATU8_SETTINGS_KEY].worker, '{"workflow":"source-active-workflow"}');
+  assert.equal(targetState.extensionSettings[ST_CHATU8_SETTINGS_KEY].editWorkerid, 'source-edit-worker');
+  assert.equal(targetState.extensionSettings[ST_CHATU8_SETTINGS_KEY].editWorker, '{"workflow":"source-edit-workflow"}');
+  assert.deepEqual(targetState.extensionSettings[ST_CHATU8_SETTINGS_KEY].workers, {
+    preset: '{"workflow":"source-preset-workflow"}',
+  });
   assert.deepEqual(targetState.indexedDb.chatu8_gallery.tags, [
     { name: 'installed-target', translation: 'keep', hot: 0, fileName: 'tags.json' },
     { name: 'portable-tag', translation: 'portable', hot: 5, fileName: 'manual' },
@@ -198,7 +230,7 @@ test('all adapters complete an encrypted A to B roundtrip without plaintext secr
 
   const repeated = await targetController.restoreAll(adapters.map(adapter => adapter.id), { sensitiveCodec: codec });
   assert.deepEqual(repeated.map(result => result.status), adapters.map(() => 'noop'));
-  assert.equal(target.inspect().extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts.length, 3);
+  assert.equal(target.inspect().extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts.length, 4);
 
   const recaptured = await targetController.captureAll(adapters.map(adapter => adapter.id), { sensitiveCodec: codec });
   assert.deepEqual(recaptured.map(result => result.status), adapters.map(() => 'unchanged'));

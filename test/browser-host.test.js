@@ -3,6 +3,15 @@ import assert from 'node:assert/strict';
 
 import { createBrowserHost, loadPluginVersions } from '../src/host/browser-host.js';
 
+function memoryLocalStorage() {
+  const values = new Map();
+  return {
+    getItem: key => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: key => values.delete(key),
+  };
+}
+
 test('browser host exposes settings, persistence, versions, and nested Tavern Helper scripts', async () => {
   const extensionSettings = {
     tavern_helper: {
@@ -17,15 +26,10 @@ test('browser host exposes settings, persistence, versions, and nested Tavern He
       },
     },
   };
-  const values = new Map();
   let saved = 0;
   const host = createBrowserHost({
     extensionSettings,
-    localStorage: {
-      getItem: key => values.get(key) ?? null,
-      setItem: (key, value) => values.set(key, value),
-      removeItem: key => values.delete(key),
-    },
+    localStorage: memoryLocalStorage(),
     pluginVersions: { 'third-party/JS-Slash-Runner': '4.8.12' },
     saveSettingsDebounced: () => { saved += 1; },
   });
@@ -50,11 +54,7 @@ test('browser host delegates Tavern Helper script reads and writes to its author
   let immediateSaves = 0;
   const host = createBrowserHost({
     extensionSettings,
-    localStorage: {
-      getItem: () => null,
-      setItem: () => {},
-      removeItem: () => {},
-    },
+    localStorage: memoryLocalStorage(),
     pluginVersions: { 'third-party/JS-Slash-Runner': '4.8.19' },
     saveSettingsDebounced: () => {},
     saveSettingsImmediate: async () => { immediateSaves += 1; },
@@ -91,6 +91,79 @@ test('browser host delegates Tavern Helper script reads and writes to its author
     ['get', { type: 'global' }],
     ['get', { type: 'global' }],
   ]);
+});
+
+test('browser host user-file operations are restricted to safe Tavern file paths', async () => {
+  const calls = [];
+  const host = createBrowserHost({
+    extensionSettings: {},
+    localStorage: memoryLocalStorage(),
+    pluginVersions: {},
+    saveSettingsDebounced: () => {},
+    runtimeGlobal: {
+      SillyTavern: {
+        getRequestHeaders: () => ({ 'Content-Type': 'application/json', 'X-Test': 'bridge' }),
+      },
+    },
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url, options });
+      if (url === '/user/files/existing.bin') {
+        return {
+          ok: true,
+          status: 200,
+          arrayBuffer: async () => Uint8Array.from([4, 5, 6]).buffer,
+        };
+      }
+      if (url === '/api/files/upload') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ path: '/user/files/portable.bin' }),
+        };
+      }
+      if (url === '/api/files/delete') return { ok: true, status: 200 };
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+
+  await assert.rejects(() => host.files.download('/api/files/private'), /only \/user\/files\//i);
+  await assert.rejects(() => host.files.download('/user/files/../escape.bin'), /safe basename/i);
+  await assert.rejects(() => host.files.download('/user/files/%2e%2e%2fescape.bin'), /safe basename/i);
+  await assert.rejects(() => host.files.upload('../escape.bin', Uint8Array.from([1])), /safe basename/i);
+  await assert.rejects(() => host.files.upload('%2e%2e%2fescape.bin', Uint8Array.from([1])), /safe basename/i);
+  assert.deepEqual(Array.from(await host.files.download('/user/files/existing.bin')), [4, 5, 6]);
+  assert.equal(await host.files.upload('portable.bin', Uint8Array.from([1, 2, 3])), '/user/files/portable.bin');
+  await host.files.delete('/user/files/portable.bin');
+
+  const upload = calls.find(call => call.url === '/api/files/upload');
+  assert.deepEqual(JSON.parse(upload.options.body), { data: 'AQID', name: 'portable.bin' });
+  assert.equal(upload.options.headers['X-Test'], 'bridge');
+  const deletion = calls.find(call => call.url === '/api/files/delete');
+  assert.deepEqual(JSON.parse(deletion.options.body), { path: '/user/files/portable.bin' });
+});
+
+test('browser host rejects an unsafe path returned by the upload endpoint', async () => {
+  const host = createBrowserHost({
+    extensionSettings: {},
+    localStorage: memoryLocalStorage(),
+    pluginVersions: {},
+    saveSettingsDebounced: () => {},
+    fetchImpl: async url => {
+      if (url === '/api/files/upload') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ path: '/user/files/../escaped.bin' }),
+        };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+
+  await assert.rejects(
+    () => host.files.upload('portable.bin', Uint8Array.from([1])),
+    /upload response is invalid/i,
+  );
 });
 
 test('plugin version loader reads only manifest versions and tolerates missing plugins', async () => {

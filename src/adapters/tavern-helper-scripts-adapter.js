@@ -1,66 +1,35 @@
 import { canonicalJson } from '../core/canonical-json.js';
-import { mergeRedacted, redactClone } from '../core/redaction.js';
+import { mergeRedacted, redactClone, redactedValue } from '../core/redaction.js';
+import { isEncryptedEnvelope } from '../core/sensitive-envelope.js';
 
 export const TAVERN_HELPER_SETTINGS_KEY = 'tavern_helper';
 const PLUGIN_ID = 'third-party/JS-Slash-Runner';
 const SUPPORTED_VERSION = /^4\./;
+const SENSITIVE_CONTEXT = 'tavern-helper/global-scripts/v1';
 
 export const TARGET_TAVERN_SCRIPTS = Object.freeze([
-  Object.freeze({
-    key: 'database',
-    id: '8e1213cb-732a-444b-8a80-631e1cf614b5',
-    name: '蚀心入魔·数据库',
-    aliases: Object.freeze(['蚀心入魔·数据库']),
-  }),
-  Object.freeze({
-    key: 'api-manager',
-    id: '9dce28ae-a88e-45c6-a211-f5980602de51',
-    name: '💡API管理器2.0.3',
-    aliases: Object.freeze(['💡API管理器2.0.3']),
-  }),
-  Object.freeze({
-    key: 'dream-card-agent',
-    id: '41179c00-7593-4cf5-b32b-4d6bb3a6b0c2',
-    name: '梦境创客（TokenRhythm代理修复）',
-    aliases: Object.freeze(['梦境创客（TokenRhythm代理修复）', '梦境创客']),
-  }),
+  Object.freeze({ key: 'database', id: '8e1213cb-732a-444b-8a80-631e1cf614b5', name: '蚀心入魔·数据库', aliases: Object.freeze(['蚀心入魔·数据库']) }),
+  Object.freeze({ key: 'api-manager', id: '9dce28ae-a88e-45c6-a211-f5980602de51', name: '💡API管理器2.0.3', aliases: Object.freeze(['💡API管理器2.0.3']) }),
+  Object.freeze({ key: 'dream-card-agent', id: '41179c00-7593-4cf5-b32b-4d6bb3a6b0c2', name: '梦境创客（TokenRhythm代理修复）', aliases: Object.freeze(['梦境创客（TokenRhythm代理修复）', '梦境创客']) }),
 ]);
-
 const TARGET_BY_ID = new Map(TARGET_TAVERN_SCRIPTS.map(item => [item.id, item]));
 const TARGET_BY_KEY = new Map(TARGET_TAVERN_SCRIPTS.map(item => [item.key, item]));
-const SENSITIVE_DATA_KEY_PATTERNS = [
-  /^api[_-]?key$/i,
-  /token/i,
-  /secret/i,
-  /pass(word)?/i,
-  /auth/i,
-  /credential/i,
-  /cookie/i,
-];
+const SENSITIVE_DATA_KEY_PATTERNS = [/^api[_-]?key$/i, /token/i, /secret/i, /pass(word)?/i, /auth/i, /credential/i, /cookie/i];
 const EMBEDDED_CREDENTIAL_PATTERNS = [
   /\bsk-[A-Za-z0-9_-]{20,}\b/,
   /\bBearer\s+[A-Za-z0-9._~-]{20,}/i,
   /\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/,
 ];
 
-function isPlainObject(value) {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
-function supported(version) {
-  return typeof version === 'string' && SUPPORTED_VERSION.test(version);
-}
-
-function getTrees(settings) {
-  return settings?.script?.scripts;
-}
+function clone(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }
+function isPlainObject(value) { return Boolean(value && typeof value === 'object' && !Array.isArray(value)); }
+function supported(version) { return typeof version === 'string' && SUPPORTED_VERSION.test(version); }
+function getTrees(settings) { return settings?.script?.scripts; }
 
 function readScriptTrees(host, settings) {
   if (typeof host.tavernHelperScripts?.get === 'function') {
     const result = host.tavernHelperScripts.get();
-    if (result?.available && Array.isArray(result.trees)) {
-      return { available: true, authoritative: true, trees: result.trees };
-    }
+    if (result?.available && Array.isArray(result.trees)) return { available: true, authoritative: true, trees: result.trees };
     return { available: false, authoritative: true, trees: [] };
   }
   return { available: true, authoritative: false, trees: getTrees(settings) ?? [] };
@@ -77,15 +46,31 @@ function collectLocations(trees) {
     if (tree?.type === 'folder' && Array.isArray(tree.scripts)) {
       tree.scripts.forEach((record, scriptIndex) => {
         if (record?.type === 'script') {
-          locations.push({
-            record,
-            path: { kind: 'folder', treeIndex, scriptIndex, folderId: tree.id },
-          });
+          locations.push({ record, path: { kind: 'folder', treeIndex, scriptIndex, folderId: tree.id, folderName: tree.name } });
         }
       });
     }
   });
   return locations;
+}
+
+function sourceScriptEntries(trees) {
+  const entries = [];
+  if (!Array.isArray(trees)) return entries;
+  trees.forEach((tree, treeIndex) => {
+    if (tree?.type === 'script') {
+      entries.push({ record: tree, path: { kind: 'root', treeIndex } });
+      return;
+    }
+    if (tree?.type === 'folder' && Array.isArray(tree.scripts)) {
+      tree.scripts.forEach((record, scriptIndex) => {
+        if (record?.type === 'script') {
+          entries.push({ record, path: { kind: 'folder', treeIndex, scriptIndex, folderId: tree.id, folderName: tree.name } });
+        }
+      });
+    }
+  });
+  return entries;
 }
 
 function structuralProbe(trees) {
@@ -95,34 +80,74 @@ function structuralProbe(trees) {
   let folderScriptCount = 0;
   let unsupportedEntryCount = 0;
   for (const entry of entries) {
-    if (entry?.type === 'script') {
-      rootScriptCount += 1;
-    } else if (entry?.type === 'folder' && Array.isArray(entry.scripts)) {
+    if (entry?.type === 'script') rootScriptCount += 1;
+    else if (entry?.type === 'folder' && Array.isArray(entry.scripts)) {
       folderCount += 1;
       folderScriptCount += entry.scripts.filter(record => record?.type === 'script').length;
-    } else {
-      unsupportedEntryCount += 1;
-    }
+    } else unsupportedEntryCount += 1;
   }
-  return {
-    rootEntryCount: entries.length,
-    rootScriptCount,
-    folderCount,
-    folderScriptCount,
-    unsupportedEntryCount,
-  };
+  return { rootEntryCount: entries.length, rootScriptCount, folderCount, folderScriptCount, unsupportedEntryCount };
 }
 
 function hasLikelyEmbeddedCredential(content) {
   return typeof content === 'string' && EMBEDDED_CREDENTIAL_PATTERNS.some(pattern => pattern.test(content));
 }
+function scriptsWithEmbeddedCredentials(trees) {
+  return collectLocations(trees).filter(location => hasLikelyEmbeddedCredential(location.record.content));
+}
+function scriptCount(trees) { return collectLocations(trees).length; }
+
+function validateTreeEntry(entry, where) {
+  if (!isPlainObject(entry) || typeof entry.id !== 'string' || entry.id === '' || typeof entry.name !== 'string') {
+    throw new TypeError(`Tavern Helper ${where} entry is invalid`);
+  }
+  if (entry.type === 'script') return;
+  if (entry.type !== 'folder' || !Array.isArray(entry.scripts)) throw new TypeError(`Tavern Helper ${where} contains an unsupported entry`);
+  for (const script of entry.scripts) {
+    if (!isPlainObject(script) || script.type !== 'script' || typeof script.id !== 'string' || script.id === '' || typeof script.name !== 'string') {
+      throw new TypeError(`Tavern Helper folder ${entry.name} contains an invalid script`);
+    }
+  }
+}
+
+function duplicateNames(values) {
+  const seen = new Set();
+  const duplicates = new Set();
+  for (const value of values) {
+    if (seen.has(value)) duplicates.add(value);
+    else seen.add(value);
+  }
+  return [...duplicates];
+}
+
+function validateLogicalUniqueness(trees, label) {
+  const rootScripts = trees.filter(entry => entry?.type === 'script');
+  const folders = trees.filter(entry => entry?.type === 'folder');
+  const duplicateRootScripts = duplicateNames(rootScripts.map(entry => entry.name));
+  const duplicateFolders = duplicateNames(folders.map(entry => entry.name));
+  if (duplicateRootScripts.length) throw new Error(`${label} has duplicate root script names: ${duplicateRootScripts.join(', ')}`);
+  if (duplicateFolders.length) throw new Error(`${label} has duplicate folder names: ${duplicateFolders.join(', ')}`);
+  for (const folder of folders) {
+    const duplicateScripts = duplicateNames(folder.scripts.map(script => script.name));
+    if (duplicateScripts.length) throw new Error(`${label} folder ${folder.name} has duplicate script names: ${duplicateScripts.join(', ')}`);
+  }
+}
+
+function validateFullPayload(payload) {
+  if (!isPlainObject(payload) || payload.dataVersion !== 2 || !Array.isArray(payload.trees)) {
+    throw new TypeError('Tavern Helper full scripts payload is invalid');
+  }
+  if (!supported(payload.pluginVersion)) throw new Error(`Unsupported Tavern Helper snapshot version ${String(payload.pluginVersion)}`);
+  for (const entry of payload.trees) validateTreeEntry(entry, 'snapshot');
+  validateLogicalUniqueness(payload.trees, 'Tavern Helper snapshot');
+  if (!isEncryptedEnvelope(payload.encryptedTrees)) {
+    throw new TypeError('Tavern Helper full script snapshots must contain encrypted trees');
+  }
+  return payload;
+}
 
 function targetNames(target, incomingRecord = null) {
-  return new Set([
-    target.name,
-    ...(target.aliases ?? []),
-    typeof incomingRecord?.name === 'string' ? incomingRecord.name : null,
-  ].filter(Boolean));
+  return new Set([target.name, ...(target.aliases ?? []), typeof incomingRecord?.name === 'string' ? incomingRecord.name : null].filter(Boolean));
 }
 
 function targetFromLegacyRecord(record) {
@@ -132,14 +157,9 @@ function targetFromLegacyRecord(record) {
   return matches.length === 1 ? matches[0] : null;
 }
 
-function normalizePayload(payload) {
-  if (!isPlainObject(payload) || payload.dataVersion !== 1 || !Array.isArray(payload.records)) {
-    throw new TypeError('Tavern Helper scripts payload is invalid');
-  }
-  if (!supported(payload.pluginVersion)) {
-    throw new Error(`Unsupported Tavern Helper snapshot version ${String(payload.pluginVersion)}`);
-  }
-
+function normalizeLegacyPayload(payload) {
+  if (!isPlainObject(payload) || payload.dataVersion !== 1 || !Array.isArray(payload.records)) throw new TypeError('Tavern Helper scripts payload is invalid');
+  if (!supported(payload.pluginVersion)) throw new Error(`Unsupported Tavern Helper snapshot version ${String(payload.pluginVersion)}`);
   const seenKeys = new Set();
   const seenIds = new Set();
   const records = payload.records.map(item => {
@@ -152,14 +172,17 @@ function normalizePayload(payload) {
     seenIds.add(record.id);
     return { ...item, targetKey: target.key, target };
   });
-
   const missingTargets = TARGET_TAVERN_SCRIPTS.filter(target => !seenKeys.has(target.key));
   if (missingTargets.length > 0 || seenKeys.size !== TARGET_TAVERN_SCRIPTS.length) {
-    throw new TypeError(
-      `Tavern Helper scripts snapshot is incomplete; recapture on a source device with all guarded scripts present (missing ${missingTargets.length})`,
-    );
+    throw new TypeError(`Tavern Helper scripts snapshot is incomplete; recapture on a source device with all guarded scripts present (missing ${missingTargets.length})`);
   }
   return { ...payload, records };
+}
+
+function parsePayload(payload) {
+  return payload?.dataVersion === 2
+    ? { kind: 'full', payload: validateFullPayload(payload) }
+    : { kind: 'legacy', payload: normalizeLegacyPayload(payload) };
 }
 
 function resolveTargetLocation(locations, target, incomingRecord = null) {
@@ -167,7 +190,6 @@ function resolveTargetLocation(locations, target, incomingRecord = null) {
   const idMatches = locations.filter(location => candidateIds.has(location.record.id));
   if (idMatches.length === 1) return { location: idMatches[0], matchedBy: 'id' };
   if (idMatches.length > 1) return { ambiguous: idMatches, matchedBy: 'id' };
-
   const names = targetNames(target, incomingRecord);
   const nameMatches = locations.filter(location => names.has(location.record.name));
   if (nameMatches.length === 1) return { location: nameMatches[0], matchedBy: 'name' };
@@ -175,7 +197,7 @@ function resolveTargetLocation(locations, target, incomingRecord = null) {
   return null;
 }
 
-function findConflicts(trees, payload) {
+function legacyConflicts(trees, payload) {
   const locations = collectLocations(trees);
   const conflicts = [];
   for (const incoming of payload.records) {
@@ -192,53 +214,295 @@ function findConflicts(trees, payload) {
   return conflicts;
 }
 
-function applyRecords(trees, records) {
-  const output = JSON.parse(JSON.stringify(Array.isArray(trees) ? trees : []));
+function applyLegacyRecords(trees, records) {
+  const output = clone(Array.isArray(trees) ? trees : []);
   for (const incoming of records) {
     const locations = collectLocations(output);
     const resolution = resolveTargetLocation(locations, incoming.target, incoming.record);
     const existing = resolution?.location;
     if (!existing) {
-      const restored = mergeRedacted(undefined, incoming.record, {
-        preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS,
-      });
-      output.push(restored);
+      output.push(mergeRedacted(undefined, incoming.record, { preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS }));
       continue;
     }
-    const restored = mergeRedacted(existing.record, incoming.record, {
-      preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS,
-    });
+    const restored = mergeRedacted(existing.record, incoming.record, { preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS });
     restored.id = existing.record.id;
-    if (existing.path.kind === 'root') {
-      output[existing.path.treeIndex] = restored;
-    } else {
-      output[existing.path.treeIndex].scripts[existing.path.scriptIndex] = restored;
+    if (existing.path.kind === 'root') output[existing.path.treeIndex] = restored;
+    else output[existing.path.treeIndex].scripts[existing.path.scriptIndex] = restored;
+  }
+  return output;
+}
+
+function redactedTreeForEncrypted(trees) {
+  const redacted = redactClone(trees, { sensitiveKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS }).value;
+  for (const location of collectLocations(redacted)) location.record.content = redactedValue();
+  return redacted;
+}
+
+async function unlockedFullTrees(payload, sensitiveCodec) {
+  if (!sensitiveCodec?.decrypt) return null;
+  const sensitive = await sensitiveCodec.decrypt(payload.encryptedTrees, SENSITIVE_CONTEXT);
+  if (!isPlainObject(sensitive) || !Array.isArray(sensitive.trees)) throw new TypeError('Tavern Helper decrypted script tree payload is invalid');
+  for (const entry of sensitive.trees) validateTreeEntry(entry, 'decrypted snapshot');
+  validateLogicalUniqueness(sensitive.trees, 'Tavern Helper decrypted snapshot');
+  return sensitive.trees;
+}
+
+function sameNameMatches(entries, type, name) {
+  return entries.map((entry, index) => ({ entry, index })).filter(item => item.entry?.type === type && item.entry.name === name);
+}
+
+function resolveFullScriptLocation(trees, sourceScript, sourcePath) {
+  const locations = collectLocations(trees);
+  const idMatches = locations.filter(location => location.record.id === sourceScript.id);
+  if (idMatches.length === 1) return { location: idMatches[0], matchedBy: 'id' };
+  if (idMatches.length > 1) return { ambiguous: idMatches, matchedBy: 'id' };
+
+  const guardedTarget = targetFromLegacyRecord(sourceScript);
+  if (guardedTarget) {
+    const guarded = resolveTargetLocation(locations, guardedTarget, sourceScript);
+    if (guarded) return { ...guarded, guardedTarget };
+  }
+
+  if (sourcePath.kind === 'root') {
+    const matches = locations.filter(location => location.path.kind === 'root' && location.record.name === sourceScript.name);
+    if (matches.length === 1) return { location: matches[0], matchedBy: 'root-name' };
+    if (matches.length > 1) return { ambiguous: matches, matchedBy: 'root-name' };
+    return null;
+  }
+
+  const folderMatches = sameNameMatches(trees, 'folder', sourcePath.folderName);
+  if (folderMatches.length > 1) return { ambiguousFolders: folderMatches, matchedBy: 'folder-name' };
+  if (folderMatches.length === 0) return null;
+  const folder = folderMatches[0].entry;
+  const scriptMatches = folder.scripts
+    .map((script, scriptIndex) => ({
+      record: script,
+      path: {
+        kind: 'folder',
+        treeIndex: folderMatches[0].index,
+        scriptIndex,
+        folderId: folder.id,
+        folderName: folder.name,
+      },
+    }))
+    .filter(item => item.record?.type === 'script' && item.record.name === sourceScript.name);
+  if (scriptMatches.length === 1) return { location: scriptMatches[0], matchedBy: 'folder-script-name' };
+  if (scriptMatches.length > 1) return { ambiguous: scriptMatches, matchedBy: 'folder-script-name' };
+  return null;
+}
+
+function fullTreeConflicts(targetTrees, sourceTrees) {
+  const conflicts = [];
+  for (const sourceFolder of sourceTrees.filter(entry => entry?.type === 'folder')) {
+    const folderMatches = sameNameMatches(targetTrees, 'folder', sourceFolder.name);
+    if (folderMatches.length > 1) {
+      conflicts.push({ reason: 'duplicate-folder', name: sourceFolder.name, conflictingIds: folderMatches.map(item => item.entry.id) });
+    }
+  }
+  for (const source of sourceScriptEntries(sourceTrees)) {
+    const resolution = resolveFullScriptLocation(targetTrees, source.record, source.path);
+    if (resolution?.ambiguous) {
+      conflicts.push({
+        reason: resolution.guardedTarget ? 'ambiguous-logical-target' : resolution.matchedBy === 'id' ? 'duplicate-script-id' : source.path.kind === 'root' ? 'duplicate-root-script' : 'duplicate-folder-script',
+        name: source.record.name,
+        ...(source.path.kind === 'folder' ? { folder: source.path.folderName } : {}),
+        conflictingIds: resolution.ambiguous.map(item => item.record.id),
+      });
+    } else if (resolution?.ambiguousFolders) {
+      conflicts.push({
+        reason: 'duplicate-folder',
+        name: source.path.folderName,
+        conflictingIds: resolution.ambiguousFolders.map(item => item.entry.id),
+      });
+    }
+  }
+  return conflicts;
+}
+
+function mergeScript(existing, incoming) {
+  if (!existing) return clone(incoming);
+  const restored = mergeRedacted(existing, incoming, { preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS });
+  restored.id = existing.id;
+  return restored;
+}
+
+function replaceLocation(trees, location, record) {
+  if (location.path.kind === 'root') trees[location.path.treeIndex] = record;
+  else trees[location.path.treeIndex].scripts[location.path.scriptIndex] = record;
+}
+
+function mergeFolderMetadata(existing, incoming) {
+  const scripts = clone(existing.scripts ?? []);
+  const restored = mergeRedacted(existing, incoming, { preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS });
+  restored.id = existing.id;
+  restored.scripts = scripts;
+  return restored;
+}
+
+function mergeFullTrees(targetTrees, sourceTrees) {
+  const output = clone(Array.isArray(targetTrees) ? targetTrees : []);
+
+  for (const source of sourceTrees.filter(entry => entry?.type === 'script')) {
+    const resolution = resolveFullScriptLocation(output, source, { kind: 'root' });
+    if (resolution?.location) replaceLocation(output, resolution.location, mergeScript(resolution.location.record, source));
+    else output.push(clone(source));
+  }
+
+  for (const sourceFolder of sourceTrees.filter(entry => entry?.type === 'folder')) {
+    const folderMatches = sameNameMatches(output, 'folder', sourceFolder.name);
+    let targetFolderIndex = folderMatches.length === 1 ? folderMatches[0].index : null;
+    if (targetFolderIndex !== null) {
+      output[targetFolderIndex] = mergeFolderMetadata(output[targetFolderIndex], sourceFolder);
+    }
+
+    const unmatched = [];
+    for (const sourceScript of sourceFolder.scripts) {
+      const resolution = resolveFullScriptLocation(output, sourceScript, {
+        kind: 'folder',
+        folderName: sourceFolder.name,
+        folderId: sourceFolder.id,
+      });
+      if (resolution?.location) {
+        replaceLocation(output, resolution.location, mergeScript(resolution.location.record, sourceScript));
+      } else if (targetFolderIndex !== null) {
+        output[targetFolderIndex].scripts.push(clone(sourceScript));
+      } else {
+        unmatched.push(clone(sourceScript));
+      }
+    }
+
+    if (targetFolderIndex === null && unmatched.length > 0) {
+      const created = clone(sourceFolder);
+      created.scripts = unmatched;
+      output.push(created);
+      targetFolderIndex = output.length - 1;
     }
   }
   return output;
 }
 
-function canSafelyCompletePartialSet(trees, payload) {
-  const locations = collectLocations(trees);
-  const current = payload.records
-    .map(incoming => ({ incoming, resolution: resolveTargetLocation(locations, incoming.target, incoming.record) }))
-    .filter(item => item.resolution?.location && !item.resolution?.ambiguous);
-  if (current.length === 0 || current.length >= payload.records.length) return false;
+function folderMetadata(folder) {
+  const value = clone(folder);
+  delete value.scripts;
+  return value;
+}
 
-  return current.every(({ incoming, resolution }) => {
-    const existing = resolution.location.record;
-    const merged = mergeRedacted(existing, incoming.record, {
-      preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS,
-    });
-    merged.id = existing.id;
-    return canonicalJson(existing) === canonicalJson(merged);
-  });
+function isAdditiveOnly(targetTrees, mergedTrees) {
+  if (canonicalJson(targetTrees) === canonicalJson(mergedTrees)) return false;
+  if (!Array.isArray(targetTrees) || !Array.isArray(mergedTrees) || mergedTrees.length < targetTrees.length) return false;
+  for (let index = 0; index < targetTrees.length; index += 1) {
+    const before = targetTrees[index];
+    const after = mergedTrees[index];
+    if (before?.type !== 'folder') {
+      if (canonicalJson(before) !== canonicalJson(after)) return false;
+      continue;
+    }
+    if (after?.type !== 'folder' || canonicalJson(folderMetadata(before)) !== canonicalJson(folderMetadata(after))) return false;
+    if (!Array.isArray(after.scripts) || after.scripts.length < before.scripts.length) return false;
+    for (let scriptIndex = 0; scriptIndex < before.scripts.length; scriptIndex += 1) {
+      if (canonicalJson(before.scripts[scriptIndex]) !== canonicalJson(after.scripts[scriptIndex])) return false;
+    }
+  }
+  return true;
+}
+
+function coverageEntries(payload) {
+  if (payload?.dataVersion === 1 && Array.isArray(payload.records)) {
+    return payload.records.flatMap(item => item?.record?.type === 'script'
+      ? [{ id: item.record.id, name: item.record.name, folderName: item?.path?.kind === 'folder' ? item.path.folderId ?? null : null, target: targetFromLegacyRecord(item.record) }]
+      : []);
+  }
+  if (payload?.dataVersion === 2 && Array.isArray(payload.trees)) {
+    return sourceScriptEntries(payload.trees).map(item => ({
+      id: item.record.id,
+      name: item.record.name,
+      folderName: item.path.kind === 'folder' ? item.path.folderName : null,
+      target: targetFromLegacyRecord(item.record),
+    }));
+  }
+  return [];
+}
+
+function coverageMatch(previous, next) {
+  if (previous.id && next.id && previous.id === next.id) return true;
+  if (previous.target && next.target && previous.target.key === next.target.key) return true;
+  return previous.name === next.name && previous.folderName === next.folderName;
+}
+
+function captureLegacyGuardedSet(trees, pluginVersion) {
+  const locations = collectLocations(trees);
+  const matched = new Set();
+  const records = [];
+  const missingScriptIds = [];
+
+  for (const target of TARGET_TAVERN_SCRIPTS) {
+    const resolution = resolveTargetLocation(locations, target);
+    if (resolution?.ambiguous) {
+      throw new Error(`Multiple Tavern Helper scripts match guarded target ${target.name}; resolve duplicate names before capture`);
+    }
+    const found = resolution?.location;
+    if (!found) {
+      missingScriptIds.push(target.id);
+      continue;
+    }
+    matched.add(found);
+    if (hasLikelyEmbeddedCredential(found.record.content)) {
+      return {
+        available: true,
+        status: 'deferred',
+        reason: 'sensitive-script-content-requires-encryption',
+        sourceVersion: pluginVersion,
+        payload: null,
+        diagnostics: { missingScriptIds, embeddedCredentialScriptCount: 1 },
+      };
+    }
+    const redacted = redactClone(found.record, { sensitiveKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS });
+    const path = clone(found.path);
+    delete path.folderName;
+    records.push({ targetKey: target.key, record: redacted.value, path });
+  }
+
+  if (locations.some(location => !matched.has(location))) return null;
+  if (missingScriptIds.length > 0) {
+    return {
+      available: true,
+      status: 'deferred',
+      reason: 'target-scripts-not-fully-initialized',
+      sourceVersion: pluginVersion,
+      payload: null,
+      diagnostics: { missingScriptIds },
+    };
+  }
+
+  const payload = { dataVersion: 1, pluginVersion, records };
+  normalizeLegacyPayload(payload);
+  return {
+    available: true,
+    sourceVersion: pluginVersion,
+    payload,
+    diagnostics: { missingScriptIds: [], globalScriptCount: locations.length, legacyGuardedMode: true },
+  };
 }
 
 export const tavernHelperScriptsAdapter = {
   id: 'tavern-helper-global-scripts',
   label: '酒馆助手全局脚本',
   version: 1,
+
+  captureRegression(previousPayload, nextPayload) {
+    const previous = coverageEntries(previousPayload);
+    const next = coverageEntries(nextPayload);
+    const missing = previous.filter(item => !next.some(candidate => coverageMatch(item, candidate)));
+    if (missing.length === 0) return null;
+    return {
+      reason: 'global-script-set-shrank',
+      diagnostics: {
+        previousScriptCount: previous.length,
+        nextScriptCount: next.length,
+        missingScriptCount: missing.length,
+      },
+    };
+  },
 
   async diagnose(host) {
     const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
@@ -250,11 +514,8 @@ export const tavernHelperScriptsAdapter = {
     const missingTargetIds = [];
     for (const target of TARGET_TAVERN_SCRIPTS) {
       const resolution = resolveTargetLocation(locations, target);
-      if (resolution?.location && !resolution?.ambiguous) {
-        foundTargetIds.push(resolution.location.record.id);
-      } else {
-        missingTargetIds.push(target.id);
-      }
+      if (resolution?.location && !resolution?.ambiguous) foundTargetIds.push(resolution.location.record.id);
+      else missingTargetIds.push(target.id);
     }
     return {
       pluginVersion,
@@ -263,118 +524,123 @@ export const tavernHelperScriptsAdapter = {
       settingsPresent: isPlainObject(settings),
       scriptTreePresent: Array.isArray(trees),
       tree: structuralProbe(trees),
+      globalScriptCount: scriptCount(trees),
       foundTargetIds,
       missingTargetIds,
     };
   },
 
-  async capture(host, { includeSensitive = false } = {}) {
+  async capture(host, { includeSensitive = false, sensitiveCodec } = {}) {
     const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
     const pluginVersion = host.pluginVersion(PLUGIN_ID);
     if (!isPlainObject(settings) && pluginVersion === null) {
       return { available: false, sourceVersion: null, payload: null, diagnostics: { missingScriptIds: [] } };
     }
-    if (!supported(pluginVersion)) {
-      throw new Error(`Unsupported Tavern Helper version ${String(pluginVersion)}`);
-    }
+    if (!supported(pluginVersion)) throw new Error(`Unsupported Tavern Helper version ${String(pluginVersion)}`);
     const source = readScriptTrees(host, settings);
     if (!source.available) {
+      return { available: true, status: 'deferred', reason: 'tavern-helper-script-api-not-ready', sourceVersion: pluginVersion, payload: null, diagnostics: { missingScriptIds: [] } };
+    }
+    for (const entry of source.trees) validateTreeEntry(entry, 'source');
+    validateLogicalUniqueness(source.trees, 'Tavern Helper source');
+
+    if (!includeSensitive) {
+      const legacy = captureLegacyGuardedSet(source.trees, pluginVersion);
+      if (legacy !== null) return legacy;
       return {
         available: true,
         status: 'deferred',
-        reason: 'tavern-helper-script-api-not-ready',
+        reason: 'full-script-sync-requires-encryption',
         sourceVersion: pluginVersion,
         payload: null,
-        diagnostics: { missingScriptIds: [] },
+        diagnostics: {
+          globalScriptCount: scriptCount(source.trees),
+          embeddedCredentialScriptCount: scriptsWithEmbeddedCredentials(source.trees).length,
+        },
       };
     }
 
-    const locations = collectLocations(source.trees);
-    const records = [];
-    const missingScriptIds = [];
-    for (const target of TARGET_TAVERN_SCRIPTS) {
-      const resolution = resolveTargetLocation(locations, target);
-      if (resolution?.ambiguous) {
-        throw new Error(`Multiple Tavern Helper scripts match guarded target ${target.name}; resolve duplicate names before capture`);
-      }
-      const found = resolution?.location;
-      if (!found) {
-        missingScriptIds.push(target.id);
-        continue;
-      }
-      if (hasLikelyEmbeddedCredential(found.record.content)) {
-        throw new Error(`Embedded credential detected in ${target.name}; capture refused`);
-      }
-      const redacted = redactClone(found.record, {
-        includeSensitive,
-        sensitiveKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS,
-      });
-      records.push({ targetKey: target.key, record: redacted.value, path: found.path });
-    }
-    if (missingScriptIds.length > 0) {
-      return {
-        available: true,
-        status: 'deferred',
-        reason: 'target-scripts-not-fully-initialized',
-        sourceVersion: pluginVersion,
-        payload: null,
-        diagnostics: { missingScriptIds },
-      };
-    }
-
-    const payload = { dataVersion: 1, pluginVersion, records };
-    normalizePayload(payload);
+    if (!sensitiveCodec?.encrypt) throw new Error('An encryption passphrase is required for Tavern Helper full script sync');
+    const embeddedCredentialScripts = scriptsWithEmbeddedCredentials(source.trees);
+    const payload = {
+      dataVersion: 2,
+      pluginVersion,
+      trees: redactedTreeForEncrypted(source.trees),
+      encryptedTrees: await sensitiveCodec.encrypt({ trees: clone(source.trees) }, SENSITIVE_CONTEXT),
+    };
+    validateFullPayload(payload);
     return {
       available: true,
       sourceVersion: pluginVersion,
       payload,
-      diagnostics: { missingScriptIds },
+      diagnostics: {
+        missingScriptIds: [],
+        globalScriptCount: scriptCount(source.trees),
+        embeddedCredentialScriptCount: embeddedCredentialScripts.length,
+      },
     };
   },
 
-  async preview(host, rawPayload) {
-    const payload = normalizePayload(rawPayload);
+  async preview(host, rawPayload, { sensitiveCodec } = {}) {
+    const parsed = parsePayload(rawPayload);
     const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
     const targetVersion = host.pluginVersion(PLUGIN_ID);
     if (!isPlainObject(settings) && targetVersion === null) return { status: 'missing-target' };
-    if (!supported(targetVersion)) {
-      return { status: 'incompatible', message: `Target Tavern Helper version ${String(targetVersion)} is not supported` };
-    }
+    if (!supported(targetVersion)) return { status: 'incompatible', message: `Target Tavern Helper version ${String(targetVersion)} is not supported` };
     if (!isPlainObject(settings)) return { status: 'empty-target' };
     const source = readScriptTrees(host, settings);
     if (!source.available) return { status: 'deferred', reason: 'tavern-helper-script-api-not-ready' };
     const trees = source.trees;
-    const conflicts = findConflicts(trees, payload);
+    if (parsed.kind === 'legacy') {
+      const conflicts = legacyConflicts(trees, parsed.payload);
+      if (conflicts.length > 0) return { status: 'conflict', conflicts };
+      const restored = applyLegacyRecords(trees, parsed.payload.records);
+      const status = canonicalJson(trees) === canonicalJson(restored) ? 'noop' : 'would-change';
+      return {
+        status,
+        ...(status === 'would-change' && isAdditiveOnly(trees, restored) ? { safeToApply: true } : {}),
+      };
+    }
+    const incomingTrees = await unlockedFullTrees(parsed.payload, sensitiveCodec);
+    if (incomingTrees === null) return { status: 'locked', reason: 'passphrase-required' };
+    const conflicts = fullTreeConflicts(trees, incomingTrees);
     if (conflicts.length > 0) return { status: 'conflict', conflicts };
-    const restored = applyRecords(trees, payload.records);
-    if (canonicalJson(trees) === canonicalJson(restored)) return { status: 'noop' };
+    const restored = mergeFullTrees(trees, incomingTrees);
+    const status = canonicalJson(trees) === canonicalJson(restored) ? 'noop' : 'would-change';
     return {
-      status: 'would-change',
-      ...(canSafelyCompletePartialSet(trees, payload) ? { safeToApply: true } : {}),
+      status,
+      ...(status === 'would-change' && isAdditiveOnly(trees, restored) ? { safeToApply: true } : {}),
     };
   },
 
-  async restore(host, rawPayload) {
-    const payload = normalizePayload(rawPayload);
+  async restore(host, rawPayload, { sensitiveCodec } = {}) {
+    const parsed = parsePayload(rawPayload);
     const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
     const targetVersion = host.pluginVersion(PLUGIN_ID);
     if (!isPlainObject(settings) && targetVersion === null) return { status: 'missing-target' };
-    if (!supported(targetVersion)) {
-      return { status: 'incompatible', message: `Target Tavern Helper version ${String(targetVersion)} is not supported` };
-    }
+    if (!supported(targetVersion)) return { status: 'incompatible', message: `Target Tavern Helper version ${String(targetVersion)} is not supported` };
     const currentSettings = isPlainObject(settings) ? settings : {};
     const source = readScriptTrees(host, currentSettings);
     if (!source.available) return { status: 'deferred', reason: 'tavern-helper-script-api-not-ready' };
     const trees = source.trees;
-    const conflicts = findConflicts(trees, payload);
-    if (conflicts.length > 0) return { status: 'conflict', conflicts };
-    const restoredTrees = applyRecords(trees, payload.records);
+    let restoredTrees;
+    if (parsed.kind === 'legacy') {
+      const conflicts = legacyConflicts(trees, parsed.payload);
+      if (conflicts.length > 0) return { status: 'conflict', conflicts };
+      restoredTrees = applyLegacyRecords(trees, parsed.payload.records);
+    } else {
+      const incomingTrees = await unlockedFullTrees(parsed.payload, sensitiveCodec);
+      if (incomingTrees === null) return { status: 'locked', reason: 'passphrase-required' };
+      const conflicts = fullTreeConflicts(trees, incomingTrees);
+      if (conflicts.length > 0) return { status: 'conflict', conflicts };
+      restoredTrees = mergeFullTrees(trees, incomingTrees);
+    }
     if (canonicalJson(trees) === canonicalJson(restoredTrees)) return { status: 'noop' };
     if (source.authoritative) {
       const result = host.tavernHelperScripts.replace(restoredTrees);
       if (!result?.available) return { status: 'deferred', reason: 'tavern-helper-script-api-not-ready' };
     } else {
-      const nextSettings = JSON.parse(JSON.stringify(currentSettings));
+      const nextSettings = clone(currentSettings);
       nextSettings.script ??= {};
       nextSettings.script.scripts = restoredTrees;
       host.extensionSettings.set(TAVERN_HELPER_SETTINGS_KEY, nextSettings);

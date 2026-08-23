@@ -24,7 +24,10 @@ function sourceSettings(overrides = {}) {
     st_chatu8_sd_auth: 'source-auth',
     comfyuiUrl: 'https://source.comfy.private',
     workerid: 'source-worker',
-    workers: { one: { status: 'busy' } },
+    worker: '{"workflow":"source-active-private-body"}',
+    editWorkerid: 'source-edit-worker',
+    editWorker: '{"workflow":"source-edit-private-body"}',
+    workers: { one: '{"workflow":"source-preset-private-body"}' },
     imageGenStats: { count: 99 },
     chatu8_fab_position: { x: 10, y: 20 },
     ...overrides,
@@ -39,7 +42,7 @@ function hostFor(value = sourceSettings()) {
   });
 }
 
-test('st-chatu8 encrypted snapshot restores API settings on a clean device without device state', async () => {
+test('st-chatu8 encrypted snapshot restores credentials and workflow presets on a clean device', async () => {
   const codec = createPassphraseSensitiveCodec('portable st chatu8 passphrase');
   const captured = await stChatu8Adapter.capture(hostFor(), { includeSensitive: true, sensitiveCodec: codec });
   const serialized = JSON.stringify(captured.payload);
@@ -49,7 +52,9 @@ test('st-chatu8 encrypted snapshot restores API settings on a clean device witho
   assert.equal(serialized.includes('source-secret'), false);
   assert.equal(serialized.includes('source-token'), false);
   assert.equal(serialized.includes('source.private'), false);
-  assert.equal(serialized.includes('source-worker'), false);
+  assert.equal(serialized.includes('source-active-private-body'), false);
+  assert.equal(serialized.includes('source-edit-private-body'), false);
+  assert.equal(serialized.includes('source-preset-private-body'), false);
 
   const target = createMemoryHost({
     pluginVersions: { 'third-party/st-chatu8': '2.8.4' },
@@ -66,19 +71,25 @@ test('st-chatu8 encrypted snapshot restores API settings on a clean device witho
   assert.equal(restored.novelaiApi, 'source-novelai-credential');
   assert.equal(restored.novelaisite, 'https://source.novelai.private');
   assert.equal(restored.comfyuiUrl, 'https://source.comfy.private');
-  assert.equal(Object.hasOwn(restored, 'workerid'), false);
-  assert.equal(Object.hasOwn(restored, 'workers'), false);
+  assert.equal(restored.workerid, 'source-worker');
+  assert.equal(restored.worker, '{"workflow":"source-active-private-body"}');
+  assert.equal(restored.editWorkerid, 'source-edit-worker');
+  assert.equal(restored.editWorker, '{"workflow":"source-edit-private-body"}');
+  assert.deepEqual(restored.workers, { one: '{"workflow":"source-preset-private-body"}' });
   assert.equal(Object.hasOwn(restored, 'imageGenStats'), false);
   assert.equal(Object.hasOwn(restored, 'chatu8_fab_position'), false);
 });
 
-test('st-chatu8 encrypted restore preserves target device-only fields', async () => {
+test('st-chatu8 encrypted restore replaces portable workflows but preserves target device-only fields', async () => {
   const codec = createPassphraseSensitiveCodec('portable st chatu8 passphrase');
   const captured = await stChatu8Adapter.capture(hostFor(), { includeSensitive: true, sensitiveCodec: codec });
   const target = hostFor(sourceSettings({
     ai_token: 'target-token',
     workerid: 'target-worker',
-    workers: { local: { status: 'idle' } },
+    worker: '{"workflow":"target-active"}',
+    editWorkerid: 'target-edit-worker',
+    editWorker: '{"workflow":"target-edit"}',
+    workers: { local: '{"workflow":"target-preset"}' },
     imageGenStats: { count: 3 },
     chatu8_fab_position: { x: 90, y: 80 },
   }));
@@ -87,8 +98,10 @@ test('st-chatu8 encrypted restore preserves target device-only fields', async ()
   const restored = target.inspect().extensionSettings[ST_CHATU8_SETTINGS_KEY];
 
   assert.equal(restored.ai_token, 'source-token');
-  assert.equal(restored.workerid, 'target-worker');
-  assert.deepEqual(restored.workers, { local: { status: 'idle' } });
+  assert.equal(restored.workerid, 'source-worker');
+  assert.equal(restored.worker, '{"workflow":"source-active-private-body"}');
+  assert.equal(restored.editWorkerid, 'source-edit-worker');
+  assert.deepEqual(restored.workers, { one: '{"workflow":"source-preset-private-body"}' });
   assert.deepEqual(restored.imageGenStats, { count: 3 });
   assert.deepEqual(restored.chatu8_fab_position, { x: 90, y: 80 });
 });

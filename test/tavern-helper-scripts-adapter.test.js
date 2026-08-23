@@ -6,9 +6,11 @@ import {
   TAVERN_HELPER_SETTINGS_KEY,
   tavernHelperScriptsAdapter,
 } from '../src/adapters/tavern-helper-scripts-adapter.js';
+import { createPassphraseSensitiveCodec } from '../src/core/sensitive-envelope.js';
 import { createMemoryHost } from './helpers/memory-host.js';
 
 const [DATABASE_SCRIPT, API_SCRIPT, DREAM_SCRIPT] = TARGET_TAVERN_SCRIPTS;
+const codec = () => createPassphraseSensitiveCodec('tavern helper portable passphrase');
 
 function script(id, name, content, extra = {}) {
   return {
@@ -25,11 +27,11 @@ function script(id, name, content, extra = {}) {
   };
 }
 
-function folder(id, name, scripts) {
-  return { type: 'folder', enabled: true, name, id, icon: 'fa-folder', color: '#fff', scripts };
+function folder(id, name, scripts, extra = {}) {
+  return { type: 'folder', enabled: true, name, id, icon: 'fa-folder', color: '#fff', scripts, ...extra };
 }
 
-function hostWithScripts(scripts, version = '4.8.12') {
+function hostWithScripts(scripts, version = '4.9.3') {
   return createMemoryHost({
     extensionSettings: {
       [TAVERN_HELPER_SETTINGS_KEY]: {
@@ -40,93 +42,125 @@ function hostWithScripts(scripts, version = '4.8.12') {
   });
 }
 
-test('script adapter captures only the three guarded logical targets with complete records', async () => {
-  const database = script(DATABASE_SCRIPT.id, '用户重命名的数据库', 'console.log("db")');
-  const api = script(API_SCRIPT.id, API_SCRIPT.name, 'console.log("api")', { data: { apiKey: 'secret', theme: 'dark' } });
-  const dream = script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'console.log("dream")');
-  const unrelated = script('other-id', 'Other', 'console.log("other")');
-  const host = hostWithScripts([database, folder('folder-1', 'Folder', [api, unrelated]), dream]);
+async function encryptedCapture(host) {
+  const sensitiveCodec = codec();
+  const captured = await tavernHelperScriptsAdapter.capture(host, {
+    includeSensitive: true,
+    sensitiveCodec,
+  });
+  return { captured, sensitiveCodec };
+}
+
+test('full Tavern Helper capture requires encryption instead of exposing arbitrary script source', async () => {
+  const host = hostWithScripts([
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'console.log("db")'),
+    script('custom-id', 'My custom script', 'const hidden = "plain-custom-body";'),
+  ]);
 
   const result = await tavernHelperScriptsAdapter.capture(host);
 
-  assert.equal(result.available, true);
-  assert.deepEqual(result.payload.records.map(item => item.targetKey), [
-    DATABASE_SCRIPT.key,
-    API_SCRIPT.key,
-    DREAM_SCRIPT.key,
-  ]);
-  assert.deepEqual(result.payload.records.map(item => item.record.id), [
-    DATABASE_SCRIPT.id,
-    API_SCRIPT.id,
-    DREAM_SCRIPT.id,
-  ]);
-  assert.equal(result.payload.records[0].record.name, '用户重命名的数据库');
-  assert.equal(result.payload.records[1].path.kind, 'folder');
-  assert.equal(result.payload.records[1].path.folderId, 'folder-1');
-  assert.equal(result.payload.records[1].record.data.theme, 'dark');
-  assert.equal(JSON.stringify(result.payload).includes('secret'), false);
+  assert.equal(result.status, 'deferred');
+  assert.equal(result.reason, 'full-script-sync-requires-encryption');
+  assert.equal(result.payload, null);
 });
 
-test('script adapter recognizes imported scripts after Tavern Helper regenerates UUIDs', async () => {
+test('encrypted capture includes every global script while public payload contains no script bodies', async () => {
   const host = hostWithScripts([
-    script('local-db-uuid', DATABASE_SCRIPT.name, 'db'),
-    script('local-api-uuid', API_SCRIPT.name, 'api'),
-    script('local-dream-uuid', '梦境创客', 'dream'),
-  ], '4.9.3');
-
-  const captured = await tavernHelperScriptsAdapter.capture(host);
-  const probe = await tavernHelperScriptsAdapter.diagnose(host);
-
-  assert.deepEqual(captured.payload.records.map(item => item.targetKey), [
-    DATABASE_SCRIPT.key,
-    API_SCRIPT.key,
-    DREAM_SCRIPT.key,
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'db-body'),
+    folder('folder-1', 'Utilities', [
+      script(API_SCRIPT.id, API_SCRIPT.name, 'const key = "sk-abcdefghijklmnopqrstuvwxyz";'),
+      script('other-id', 'Other helper', 'other-body'),
+    ]),
+    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'dream-body'),
   ]);
-  assert.deepEqual(captured.payload.records.map(item => item.record.id), [
-    'local-db-uuid',
-    'local-api-uuid',
-    'local-dream-uuid',
-  ]);
-  assert.deepEqual(probe.foundTargetIds, ['local-db-uuid', 'local-api-uuid', 'local-dream-uuid']);
-  assert.deepEqual(probe.missingTargetIds, []);
+  const { captured } = await encryptedCapture(host);
+  const serialized = JSON.stringify(captured.payload);
+
+  assert.equal(captured.payload.dataVersion, 2);
+  assert.equal(captured.payload.encryptedTrees.$ttSyncBridge, 'encrypted-v1');
+  assert.equal(captured.diagnostics.globalScriptCount, 4);
+  assert.equal(serialized.includes('db-body'), false);
+  assert.equal(serialized.includes('sk-abcdefghijklmnopqrstuvwxyz'), false);
+  assert.equal(serialized.includes('other-body'), false);
+  assert.equal(serialized.includes('dream-body'), false);
+  assert.deepEqual(
+    captured.payload.trees.flatMap(entry => entry.type === 'folder' ? entry.scripts.map(item => item.name) : [entry.name]),
+    [DATABASE_SCRIPT.name, API_SCRIPT.name, 'Other helper', DREAM_SCRIPT.name],
+  );
 });
 
-test('script restore replaces matching IDs in place and is idempotent', async () => {
+test('full restore matches the same UUID across different folders and preserves target-only scripts', async () => {
   const source = hostWithScripts([
-    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
-    folder('folder-1', 'Folder', [script(API_SCRIPT.id, API_SCRIPT.name, 'source-api')]),
-    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'source-dream'),
+    folder('source-folder', 'Source Folder', [
+      script(API_SCRIPT.id, API_SCRIPT.name, 'source-api'),
+      script('source-new-id', 'Source only', 'source-new'),
+    ]),
   ]);
-  const captured = await tavernHelperScriptsAdapter.capture(source);
+  const { captured, sensitiveCodec } = await encryptedCapture(source);
   const target = hostWithScripts([
-    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'old-db'),
-    folder('target-folder', 'Target Folder', [script(API_SCRIPT.id, API_SCRIPT.name, 'old-api')]),
-    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'old-dream'),
+    folder('target-folder', 'Target Folder', [
+      script(API_SCRIPT.id, API_SCRIPT.name, 'old-api'),
+      script('target-only-id', 'Target only', 'keep-me'),
+    ]),
   ]);
 
-  const first = await tavernHelperScriptsAdapter.restore(target, captured.payload);
-  const second = await tavernHelperScriptsAdapter.restore(target, captured.payload);
+  const first = await tavernHelperScriptsAdapter.restore(target, captured.payload, { sensitiveCodec });
+  const second = await tavernHelperScriptsAdapter.restore(target, captured.payload, { sensitiveCodec });
   const trees = target.inspect().extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts;
+  const targetFolder = trees.find(entry => entry.id === 'target-folder');
+  const sourceFolder = trees.find(entry => entry.name === 'Source Folder');
 
   assert.equal(first.status, 'applied');
   assert.equal(second.status, 'noop');
-  assert.equal(trees[0].content, 'source-db');
-  assert.equal(trees[1].id, 'target-folder');
-  assert.equal(trees[1].scripts[0].content, 'source-api');
-  assert.equal(trees[2].content, 'source-dream');
-  assert.equal(target.inspect().saveCount, 1);
+  assert.equal(targetFolder.scripts.find(item => item.id === API_SCRIPT.id).content, 'source-api');
+  assert.equal(targetFolder.scripts.find(item => item.id === 'target-only-id').content, 'keep-me');
+  assert.equal(sourceFolder.scripts.length, 1);
+  assert.equal(sourceFolder.scripts[0].id, 'source-new-id');
+  assert.equal(trees.flatMap(entry => entry.type === 'folder' ? entry.scripts : [entry]).filter(item => item.id === API_SCRIPT.id).length, 1);
 });
 
-test('script restore writes through Tavern Helper authoritative store so its watcher cannot erase restored scripts', async () => {
+test('guarded scripts match aliases after UUID regeneration without creating a duplicate', async () => {
   const source = hostWithScripts([
     script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
     script(API_SCRIPT.id, API_SCRIPT.name, 'source-api'),
     script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'source-dream'),
-  ], '4.8.19');
-  const captured = await tavernHelperScriptsAdapter.capture(source);
+  ]);
+  const { captured, sensitiveCodec } = await encryptedCapture(source);
   const target = hostWithScripts([
-    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'mobile-db'),
-  ], '4.8.19');
+    script('target-db-id', DATABASE_SCRIPT.name, 'target-db'),
+    script('target-api-id', API_SCRIPT.name, 'target-api'),
+    script('target-dream-id', '梦境创客', 'target-dream'),
+  ]);
+
+  const result = await tavernHelperScriptsAdapter.restore(target, captured.payload, { sensitiveCodec });
+  const scripts = target.inspect().extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts;
+
+  assert.equal(result.status, 'applied');
+  assert.deepEqual(scripts.map(item => item.id), ['target-db-id', 'target-api-id', 'target-dream-id']);
+  assert.deepEqual(scripts.map(item => item.content), ['source-db', 'source-api', 'source-dream']);
+});
+
+test('preview marks an identical partial target as safe when restore only adds missing scripts', async () => {
+  const complete = [
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'shared-db'),
+    script(API_SCRIPT.id, API_SCRIPT.name, 'shared-api'),
+    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'shared-dream'),
+  ];
+  const { captured, sensitiveCodec } = await encryptedCapture(hostWithScripts(complete));
+  const target = hostWithScripts([complete[0]]);
+
+  const preview = await tavernHelperScriptsAdapter.preview(target, captured.payload, { sensitiveCodec });
+
+  assert.equal(preview.status, 'would-change');
+  assert.equal(preview.safeToApply, true);
+});
+
+test('full restore writes through Tavern Helper authoritative API', async () => {
+  const { captured, sensitiveCodec } = await encryptedCapture(hostWithScripts([
+    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
+    script(API_SCRIPT.id, API_SCRIPT.name, 'source-api'),
+  ], '4.8.19'));
+  const target = hostWithScripts([script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db')], '4.8.19');
   let authoritativeTrees = target.inspect().extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts;
   let replaceCount = 0;
   target.tavernHelperScripts = {
@@ -139,86 +173,47 @@ test('script restore writes through Tavern Helper authoritative store so its wat
       const settings = target.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
       settings.script.scripts = structuredClone(trees);
       target.extensionSettings.set(TAVERN_HELPER_SETTINGS_KEY, settings);
-      return { available: true };
+      return { available: true, trees: structuredClone(trees) };
     },
   };
 
-  const result = await tavernHelperScriptsAdapter.restore(target, captured.payload);
-  const watcherWrite = target.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
-  watcherWrite.script.scripts = structuredClone(authoritativeTrees);
-  target.extensionSettings.set(TAVERN_HELPER_SETTINGS_KEY, watcherWrite);
+  const result = await tavernHelperScriptsAdapter.restore(target, captured.payload, { sensitiveCodec });
 
   assert.equal(result.status, 'applied');
   assert.equal(replaceCount, 1);
-  assert.deepEqual(
-    target.inspect().extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts.map(item => item.id),
-    [DATABASE_SCRIPT.id, API_SCRIPT.id, DREAM_SCRIPT.id],
-  );
+  assert.deepEqual(authoritativeTrees.map(item => item.id), [DATABASE_SCRIPT.id, API_SCRIPT.id]);
 });
 
-test('script restore matches logical targets by name across regenerated IDs and preserves local IDs', async () => {
-  const source = hostWithScripts([
+test('restore defers without raw settings writes while Tavern Helper public API is not ready', async () => {
+  const { captured, sensitiveCodec } = await encryptedCapture(hostWithScripts([
     script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
     script(API_SCRIPT.id, API_SCRIPT.name, 'source-api'),
-    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'source-dream'),
-  ]);
-  const captured = await tavernHelperScriptsAdapter.capture(source);
-  const target = hostWithScripts([
-    script('target-db-id', DATABASE_SCRIPT.name, 'target-db'),
-    script('target-api-id', API_SCRIPT.name, 'target-api'),
-    script('target-dream-id', '梦境创客', 'target-dream'),
-  ]);
-
-  const preview = await tavernHelperScriptsAdapter.preview(target, captured.payload);
-  const restored = await tavernHelperScriptsAdapter.restore(target, captured.payload);
-  const trees = target.inspect().extensionSettings[TAVERN_HELPER_SETTINGS_KEY].script.scripts;
-
-  assert.equal(preview.status, 'would-change');
-  assert.equal(restored.status, 'applied');
-  assert.deepEqual(trees.map(item => item.id), ['target-db-id', 'target-api-id', 'target-dream-id']);
-  assert.deepEqual(trees.map(item => item.content), ['source-db', 'source-api', 'source-dream']);
-});
-
-test('script restore defers without raw settings writes while Tavern Helper public API is not ready', async () => {
-  const source = hostWithScripts([
-    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
-    script(API_SCRIPT.id, API_SCRIPT.name, 'source-api'),
-    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'source-dream'),
-  ], '4.8.19');
-  const captured = await tavernHelperScriptsAdapter.capture(source);
-  const target = hostWithScripts([
-    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'mobile-db'),
-  ], '4.8.19');
+  ]));
+  const target = hostWithScripts([script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db')]);
   target.tavernHelperScripts = {
     get: () => ({ available: false, trees: [] }),
     replace: () => { throw new Error('must not write before API initialization'); },
   };
   const before = target.inspect();
 
-  const result = await tavernHelperScriptsAdapter.restore(target, captured.payload);
+  const result = await tavernHelperScriptsAdapter.restore(target, captured.payload, { sensitiveCodec });
 
-  assert.deepEqual(result, {
-    status: 'deferred',
-    reason: 'tavern-helper-script-api-not-ready',
-  });
+  assert.deepEqual(result, { status: 'deferred', reason: 'tavern-helper-script-api-not-ready' });
   assert.deepEqual(target.inspect().extensionSettings, before.extensionSettings);
   assert.equal(target.inspect().saveCount, 0);
 });
 
-test('script restore reports ambiguous duplicate logical targets without writing', async () => {
-  const source = hostWithScripts([
-    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
+test('guarded duplicate names produce a hard logical-target conflict', async () => {
+  const { captured, sensitiveCodec } = await encryptedCapture(hostWithScripts([
     script(API_SCRIPT.id, API_SCRIPT.name, 'source-api'),
-    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'source-dream'),
-  ]);
-  const captured = await tavernHelperScriptsAdapter.capture(source);
+  ]));
   const target = hostWithScripts([
     script('duplicate-1', API_SCRIPT.name, 'one'),
     script('duplicate-2', API_SCRIPT.name, 'two'),
   ]);
 
-  const preview = await tavernHelperScriptsAdapter.preview(target, captured.payload);
-  const restored = await tavernHelperScriptsAdapter.restore(target, captured.payload);
+  const preview = await tavernHelperScriptsAdapter.preview(target, captured.payload, { sensitiveCodec });
+  const restored = await tavernHelperScriptsAdapter.restore(target, captured.payload, { sensitiveCodec });
 
   assert.equal(preview.status, 'conflict');
   assert.equal(restored.status, 'conflict');
@@ -226,30 +221,7 @@ test('script restore reports ambiguous duplicate logical targets without writing
   assert.equal(target.inspect().saveCount, 0);
 });
 
-test('script capture rejects likely embedded credentials without reporting the value', async () => {
-  const host = hostWithScripts([
-    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'console.log("db")'),
-    script(API_SCRIPT.id, API_SCRIPT.name, 'const apiKey = "sk-abcdefghijklmnopqrstuvwxyz";'),
-    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'console.log("dream")'),
-  ]);
-
-  await assert.rejects(() => tavernHelperScriptsAdapter.capture(host), /embedded credential.*API管理器/i);
-});
-
-test('script capture defers an incomplete target set instead of publishing a partial payload', async () => {
-  const host = hostWithScripts([
-    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'console.log("db")'),
-  ]);
-
-  const result = await tavernHelperScriptsAdapter.capture(host);
-
-  assert.equal(result.status, 'deferred');
-  assert.equal(result.reason, 'target-scripts-not-fully-initialized');
-  assert.equal(result.payload, null);
-  assert.deepEqual(result.diagnostics.missingScriptIds, [API_SCRIPT.id, DREAM_SCRIPT.id]);
-});
-
-test('script adapter exposes a content-free structural probe for mobile diagnostics', async () => {
+test('diagnostics expose only structural Tavern Helper coverage', async () => {
   const host = hostWithScripts([
     script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'must-not-appear-in-diagnostics'),
     { type: 'mobile-unknown-node', id: 'shape-only' },
@@ -258,9 +230,8 @@ test('script adapter exposes a content-free structural probe for mobile diagnost
   const probe = await tavernHelperScriptsAdapter.diagnose(host);
   const serialized = JSON.stringify(probe);
 
-  assert.equal(probe.pluginVersion, '4.8.12');
-  assert.equal(probe.settingsPresent, true);
-  assert.equal(probe.scriptTreePresent, true);
+  assert.equal(probe.pluginVersion, '4.9.3');
+  assert.equal(probe.globalScriptCount, 1);
   assert.deepEqual(probe.tree, {
     rootEntryCount: 2,
     rootScriptCount: 1,

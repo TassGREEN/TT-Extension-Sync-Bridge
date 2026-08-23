@@ -24,11 +24,6 @@ const DEVICE_ONLY_PATHS = [
   '$.settings.ai_test_output',
   '$.settings.ai_test_system',
   '$.settings.ai_test_user',
-  '$.settings.worker',
-  '$.settings.workerid',
-  '$.settings.editWorker',
-  '$.settings.editWorkerid',
-  '$.settings.workers',
   '$.settings.chatu8_fab_position',
   '$.settings.chatu8_fab_size',
   '$.settings.chatu8_fab_icon_image_id',
@@ -36,6 +31,11 @@ const DEVICE_ONLY_PATHS = [
   '$.settings.jiuguanStorage',
 ];
 const DEVICE_ONLY_KEYS = new Set(DEVICE_ONLY_PATHS.map(path => path.slice('$.settings.'.length)));
+const ENCRYPTED_ONLY_PATHS = [
+  '$.settings.worker',
+  '$.settings.editWorker',
+  '$.settings.workers',
+];
 
 const SENSITIVE_KEY_PATTERNS = [
   /^api[_-]?key$/i,
@@ -211,6 +211,14 @@ function mergeSettings(current, unlocked) {
   });
 }
 
+async function refreshRuntime(host) {
+  try {
+    await host.stChatu8?.refresh?.();
+  } catch (error) {
+    console.warn('[TT Extension Sync Bridge] st-chatu8 runtime refresh failed:', error);
+  }
+}
+
 export const stChatu8Adapter = {
   id: 'st-chatu8',
   label: 'st-chatu8',
@@ -244,7 +252,7 @@ export const stChatu8Adapter = {
       { settings: current },
       {
         sensitiveKeyPatterns: SENSITIVE_KEY_PATTERNS,
-        excludedPaths: DEVICE_ONLY_PATHS,
+        excludedPaths: [...DEVICE_ONLY_PATHS, ...ENCRYPTED_ONLY_PATHS],
       },
     );
     let encryptedSettings;
@@ -344,6 +352,7 @@ export const stChatu8Adapter = {
         if (settingsChanged) {
           host.extensionSettings.set(ST_CHATU8_SETTINGS_KEY, restored);
           await host.saveSettings();
+          await refreshRuntime(host);
         }
         return { status: 'deferred', reason: currentManualTags.reason };
       }
@@ -364,6 +373,7 @@ export const stChatu8Adapter = {
       host.extensionSettings.set(ST_CHATU8_SETTINGS_KEY, restored);
       await host.saveSettings();
     }
+    if (settingsChanged || tagsChanged) await refreshRuntime(host);
     return settingsChanged || tagsChanged ? { status: 'applied' } : { status: 'noop' };
   },
 };

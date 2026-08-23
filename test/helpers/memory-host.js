@@ -2,15 +2,26 @@ function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
+function toBytes(value) {
+  if (value instanceof Uint8Array) return Uint8Array.from(value);
+  if (Array.isArray(value)) return Uint8Array.from(value);
+  if (typeof value === 'string') return new TextEncoder().encode(value);
+  throw new TypeError('Memory host file values must be strings or byte arrays');
+}
+
 export function createMemoryHost({
   extensionSettings = {},
   localStorage = {},
   pluginVersions = {},
   indexedDb = {},
+  files = {},
 } = {}) {
   const settings = clone(extensionSettings);
   const storage = new Map(Object.entries(localStorage));
   const databases = clone(indexedDb);
+  const fileValues = new Map(Object.entries(files).map(([url, value]) => [url, toBytes(value)]));
+  const fileUploads = [];
+  const fileDeletes = [];
   const broadcasts = [];
   let saveCount = 0;
   let indexedDbWriteCount = 0;
@@ -33,6 +44,23 @@ export function createMemoryHost({
       },
       remove(key) {
         storage.delete(key);
+      },
+    },
+    files: {
+      async download(url) {
+        const value = fileValues.get(url);
+        if (!value) throw new Error(`missing user file: ${url}`);
+        return Uint8Array.from(value);
+      },
+      async upload(name, bytes) {
+        const url = `/user/files/${name}`;
+        fileValues.set(url, toBytes(bytes));
+        fileUploads.push({ name, url });
+        return url;
+      },
+      async delete(url) {
+        fileValues.delete(url);
+        fileDeletes.push(url);
       },
     },
     indexedDb: {
@@ -72,6 +100,9 @@ export function createMemoryHost({
         indexedDb: clone(databases),
         indexedDbWriteCount,
         broadcasts: clone(broadcasts),
+        files: Object.fromEntries([...fileValues].map(([url, bytes]) => [url, Array.from(bytes)])),
+        fileUploads: clone(fileUploads),
+        fileDeletes: clone(fileDeletes),
       };
     },
   };

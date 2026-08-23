@@ -11,6 +11,48 @@ function flattenScripts(trees) {
   });
 }
 
+function requireUserFileName(name) {
+  if (typeof name !== 'string' || name.trim() === '' || /[?#\u0000-\u001f\u007f]/u.test(name)) {
+    throw new TypeError('Bridge file uploads require a safe basename');
+  }
+  let decoded;
+  try {
+    decoded = decodeURIComponent(name);
+  } catch {
+    throw new TypeError('Bridge file uploads require a safe basename');
+  }
+  if (
+    name === '.'
+    || name === '..'
+    || decoded === '.'
+    || decoded === '..'
+    || /[\\/]/u.test(name)
+    || /[\\/\u0000-\u001f\u007f]/u.test(decoded)
+  ) {
+    throw new TypeError('Bridge file uploads require a safe basename');
+  }
+  return name;
+}
+
+function requireUserFileUrl(url) {
+  const prefix = '/user/files/';
+  if (typeof url !== 'string' || !url.startsWith(prefix)) {
+    throw new TypeError('Only /user/files/ paths may be accessed by the bridge file host');
+  }
+  const name = url.slice(prefix.length);
+  requireUserFileName(name);
+  return `${prefix}${name}`;
+}
+
+function bytesToBase64(bytes) {
+  const value = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let binary = '';
+  for (let offset = 0; offset < value.length; offset += 0x8000) {
+    binary += String.fromCharCode(...value.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
 export function createBrowserHost({
   extensionSettings,
   localStorage,
@@ -21,6 +63,10 @@ export function createBrowserHost({
   indexedDB = globalThis.indexedDB,
   IDBKeyRange = globalThis.IDBKeyRange,
   BroadcastChannelImpl = globalThis.BroadcastChannel,
+  documentImpl = globalThis.document,
+  CustomEventImpl = globalThis.CustomEvent,
+  runtimeGlobal = globalThis,
+  fetchImpl = globalThis.fetch,
 }) {
   const persistSettingsSoon = () => {
     if (typeof saveSettingsImmediate === 'function') {
@@ -33,6 +79,12 @@ export function createBrowserHost({
       return;
     }
     saveSettingsDebounced();
+  };
+
+  const requestHeaders = () => {
+    const getRequestHeaders = runtimeGlobal?.SillyTavern?.getRequestHeaders;
+    if (typeof getRequestHeaders === 'function') return getRequestHeaders();
+    return { 'Content-Type': 'application/json' };
   };
 
   const tavernHelperScripts = {
@@ -76,6 +128,37 @@ export function createBrowserHost({
         localStorage.setItem(key, String(value));
       },
     },
+    files: {
+      async download(url) {
+        const response = await fetchImpl(requireUserFileUrl(url), { cache: 'no-cache' });
+        if (!response.ok) throw new Error(`Bridge user file read failed: ${response.status}`);
+        return new Uint8Array(await response.arrayBuffer());
+      },
+      async upload(name, bytes) {
+        const response = await fetchImpl('/api/files/upload', {
+          body: JSON.stringify({ data: bytesToBase64(bytes), name: requireUserFileName(name) }),
+          headers: requestHeaders(),
+          method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Bridge user file upload failed: ${response.status}`);
+        const result = await response.json();
+        try {
+          return requireUserFileUrl(result?.path);
+        } catch {
+          throw new Error('Bridge user file upload response is invalid');
+        }
+      },
+      async delete(url) {
+        const response = await fetchImpl('/api/files/delete', {
+          body: JSON.stringify({ path: requireUserFileUrl(url) }),
+          headers: requestHeaders(),
+          method: 'POST',
+        });
+        if (!response.ok && response.status !== 404) {
+          throw new Error(`Bridge user file delete failed: ${response.status}`);
+        }
+      },
+    },
     indexedDb: createIndexedDbHost({ indexedDB, IDBKeyRange }),
     broadcast: {
       post(channel, message) {
@@ -87,6 +170,17 @@ export function createBrowserHost({
         } finally {
           broadcaster.close?.();
         }
+      },
+    },
+    stChatu8: {
+      async refresh() {
+        if (documentImpl?.dispatchEvent && typeof CustomEventImpl === 'function') {
+          documentImpl.dispatchEvent(new CustomEventImpl('st-chatu8-config-updated', {
+            detail: { changed: { $ttSyncBridge: true } },
+          }));
+        }
+        const reload = runtimeGlobal?.loadSilterTavernChatu8Settings;
+        if (typeof reload === 'function') await reload();
       },
     },
     pluginVersion(pluginId) {

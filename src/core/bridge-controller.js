@@ -2,7 +2,12 @@ import { createSnapshot, verifySnapshot } from './snapshot.js';
 import { sha256Json } from './hash.js';
 import { stripRedacted } from './redaction.js';
 
-const SENSITIVE_ADAPTER_IDS = new Set(['api-manager-2', 'dream-card-agent', 'st-chatu8']);
+const SENSITIVE_ADAPTER_IDS = new Set([
+  'tavern-helper-global-scripts',
+  'api-manager-2',
+  'dream-card-agent',
+  'st-chatu8',
+]);
 
 async function payloadForSnapshot(adapter, snapshot) {
   if (snapshot.adapterVersion === adapter.version) return snapshot.payload;
@@ -41,7 +46,7 @@ export class BridgeController {
     return typeof adapter.diagnose === 'function' ? adapter.diagnose(this.host) : null;
   }
 
-  async capture(adapterId, { includeSensitive = false, sensitiveCodec } = {}) {
+  async capture(adapterId, { includeSensitive = false, sensitiveCodec, allowRegression = false } = {}) {
     const adapter = this.getAdapter(adapterId);
     const effectiveIncludeSensitive = includeSensitive || (
       sensitiveCodec !== null
@@ -77,6 +82,23 @@ export class BridgeController {
       await verifySnapshot(previous, { adapterId, adapterVersion: adapter.version });
       if (previous.sensitiveDataIncluded && !effectiveIncludeSensitive) {
         throw new Error('Refusing to replace an encrypted snapshot without sensitive sync enabled');
+      }
+      if (!allowRegression && typeof adapter.captureRegression === 'function') {
+        const regression = await adapter.captureRegression(previous.payload, captured.payload);
+        if (regression) {
+          const result = {
+            status: 'deferred',
+            adapterId,
+            reason: regression.reason ?? 'capture-regression',
+            diagnostics: regression.diagnostics ?? captured.diagnostics,
+          };
+          this.localState.setAdapterState(adapterId, {
+            lastResult: result,
+            lastCheckedAt: this.now(),
+            error: null,
+          });
+          return result;
+        }
       }
     }
     const nextRevision = previous === null ? 1 : previous.sourceRevision + 1;
@@ -126,6 +148,9 @@ export class BridgeController {
     if (['missing-target', 'incompatible', 'deferred', 'locked'].includes(adapterPreview.status)) {
       return { ...adapterPreview, adapterId, snapshot, adapterPayload };
     }
+    if (adapterPreview.status === 'noop') {
+      return { status: 'noop', adapterId, snapshot, adapterPayload };
+    }
     if (adapterPreview.status === 'empty-target') {
       return { status: 'would-change', adapterId, snapshot, adapterPayload, emptyTarget: true };
     }
@@ -135,8 +160,18 @@ export class BridgeController {
 
     const current = await adapter.capture(this.host, { includeSensitive: false });
     if (!current.available) return { status: 'missing-target', adapterId, snapshot };
+    if (current.status === 'deferred' || current.payload === null || current.payload === undefined) {
+      return {
+        status: 'conflict',
+        adapterId,
+        snapshot,
+        adapterPayload,
+        hardConflict: false,
+        reason: current.reason ?? 'local-state-not-comparable',
+      };
+    }
     const currentHash = await sha256Json(stripRedacted(current.payload));
-    if (currentHash === snapshot.nonSensitiveHash || adapterPreview.status === 'noop') {
+    if (currentHash === snapshot.nonSensitiveHash) {
       return { status: 'noop', adapterId, snapshot, adapterPayload, currentHash };
     }
 

@@ -1,14 +1,16 @@
 # 支持矩阵
 
-| Adapter | 来源 | 会同步 | 明确排除 | 版本策略 |
+| Adapter | 来源 | 会同步 | 明确排除 / 本机保留 | 版本策略 |
 | --- | --- | --- | --- | --- |
-| 酒馆助手全局脚本 | 酒馆助手公共 `getScriptTrees` / `replaceScriptTrees` API（持久化结果仍落入 `extension_settings.tavern_helper.script.scripts`） | 三个稳定 ID 的完整脚本记录 | 其他脚本；检测到疑似内嵌凭据时整项拒绝采集 | 当前实机 4.8.19；公共 API 未就绪时等待；同名异 ID 为硬冲突 |
+| 酒馆助手全局脚本 | 酒馆助手公共 `getScriptTrees` / `replaceScriptTrees` API | 启用加密后同步完整全局脚本树；已知数据库/API 管理器/梦境创客脚本额外支持名称别名匹配 | 非加密模式不发布任意脚本正文；恢复不删除目标设备独有脚本；正常采集检测到脚本集合异常缩水会等待 | 酒馆助手 4.x 公共 API；接口未就绪时等待；无法唯一匹配的逻辑目标为硬冲突 |
 | 蚀心入魔·数据库 | `extension_settings.__userscripts.shujuku_v104__userscript_settings_v1` | global meta、默认 profile settings/template、template presets 等用户配置 | `shujuku_v104_windowStates` | adapter payload v1；未知版本拒绝 |
-| API 管理器 2.0.3 | localStorage | `api_configs_manager`、`api_configs_categories`、`api_configs_category_switch_indexes` 的非敏感部分 | collapsed categories、sync metadata、debug modal；Key、Token、URL、账号等敏感字段 | adapter payload v1；JSON 损坏时拒绝采集/恢复 |
-| 梦境创客 | `extension_settings.dream-card-agent` | Provider/Agent、技能、角色存储、TT 文件引用和工作区中的非敏感用户数据；可选口令加密同步完整 `providers`（Base URL、`secrets`、模型 `requestSecrets`） | `floatingButtonOffset`、`syncRevision`；未开启加密时凭据字段 | 插件数据版本 4；adapter payload v2，可显式迁移 v1；其他版本拒绝 |
-| st-chatu8 | `extension_settings.st-chatu8`；IndexedDB `chatu8_gallery/tags` | 经白名单排除与敏感字段脱敏后的标准设置；`fileName="manual"` 的用户手工标签 | 缓存、日志、worker/队列、测试输出、浮动按钮设备位置、图片/视频路径、已安装词表和图片数据库等 | 仅已审计 2.8.x / DB v6；其他版本拒绝 |
+| API 管理器 | localStorage | 分类/切换等可移植配置；启用加密后同步完整 API config（包括 Key / URL） | collapsed categories、sync metadata、debug modal 等设备/UI 状态 | 兼容已审计的 2.x 存储形态，包括 raw array、wrapper、map、grouped-api-configs；无法唯一识别结构时 fail closed |
+| 梦境创客 | `extension_settings.dream-card-agent` + Global Skill 对应 `/user/files/` | Agent、Preset、Provider 等可移植设置；启用加密后同步 Provider 敏感配置和用户自建 Global Skill 的 `SKILL.md`/资源文件，并在目标设备重建 URL | `characterStores`、`workspaceFiles`、普通 `files`/session/lease blob、`builtinSkillPackages` 缓存、`floatingButtonOffset`、`syncRevision` | 插件数据版本 4；adapter payload v4；显式迁移旧 adapter v1-v3，旧快照不搬源设备文件 URL |
+| st-chatu8 | `extension_settings.st-chatu8`；IndexedDB `chatu8_gallery/tags` | 标准可移植设置；启用加密后同步凭据与 worker/workflow presets；`fileName="manual"` 的用户手工标签 | 缓存、日志、队列/运行态、浮动按钮设备位置、图片/视频路径、已安装词表和图片数据库等 | 仅已审计 2.8.x / DB v6；其他版本拒绝 |
 
-## 酒馆助手脚本 ID
+## 酒馆助手已知逻辑脚本
+
+这三个脚本仍保留稳定 ID/别名保护，用于重新导入后 UUID 变化时避免重复；它们不再是酒馆助手同步范围的上限。
 
 | 脚本 | 稳定 ID |
 | --- | --- |
@@ -16,15 +18,28 @@
 | API 管理器 | `9dce28ae-a88e-45c6-a211-f5980602de51` |
 | 梦境创客 | `41179c00-7593-4cf5-b32b-4d6bb3a6b0c2` |
 
+## 梦境创客文件
+
+只把 Global Skill 文件视为设置级可移植资产：
+
+| Dream 数据 | 处理方式 | 原因 |
+| --- | --- | --- |
+| `globalSkills.*.url` / `globalSkills.*.files.*.url` | 不直接同步 URL；加密采集对应文件字节，目标设备重新上传后重建 URL | `/user/files/` URL 是设备本地物理引用，真正可移植的是 Skill 内容 |
+| `files["global-skill:..."]` | 目标设备根据新上传文件重建 | 属于 Global Skill 的本地 registry |
+| `characterStores` | 不同步 | 关联角色/会话元数据 |
+| `workspaceFiles` | 不同步 | 包含持久/临时工作区、附件与 `referencedSessionIds` |
+| 普通 `files`、`session:*`、`lease:*` | 不同步 | 会话/blob/运行态边界 |
+| `builtinSkillPackages` | 不同步 | 可重新下载的缓存 |
+
 ## st-chatu8 IndexedDB
 
-第一版只同步源码已确认属于用户创建数据的 manual tags，不做全库复制：
+只同步源码已确认属于用户创建数据的 manual tags，不做全库复制：
 
 | Database | Version | Stores | 原因 |
 | --- | ---: | --- | --- |
 | `chatu8_gallery` | 6 | `tags` | 仅同步 index `fileName == "manual"` 的记录，以 `name` 为稳定身份；单事务替换且保留其他 `fileName` 的记录 |
 | `chatu8_gallery` | 6 | `tupianhuancun`, `vocabularies`, `groups`, `subgroups`，以及非 manual `tags` | 图片元数据、已安装/可重建词表及派生索引，不同步 |
-| `chatu8_config_images` | 2 | `config_images` | 配置图片及 SD/ComfyUI 缓存，不属于第一版设置同步范围 |
+| `chatu8_config_images` | 2 | `config_images` | 配置图片及 SD/ComfyUI 缓存，不属于设置同步范围 |
 
 ## 快照和迁移
 

@@ -127,7 +127,10 @@ test('browser host user-file operations are restricted to safe Tavern file paths
   });
 
   await assert.rejects(() => host.files.download('/api/files/private'), /only \/user\/files\//i);
+  await assert.rejects(() => host.files.download('/user/files/../escape.bin'), /safe basename/i);
+  await assert.rejects(() => host.files.download('/user/files/%2e%2e%2fescape.bin'), /safe basename/i);
   await assert.rejects(() => host.files.upload('../escape.bin', Uint8Array.from([1])), /safe basename/i);
+  await assert.rejects(() => host.files.upload('%2e%2e%2fescape.bin', Uint8Array.from([1])), /safe basename/i);
   assert.deepEqual(Array.from(await host.files.download('/user/files/existing.bin')), [4, 5, 6]);
   assert.equal(await host.files.upload('portable.bin', Uint8Array.from([1, 2, 3])), '/user/files/portable.bin');
   await host.files.delete('/user/files/portable.bin');
@@ -137,6 +140,30 @@ test('browser host user-file operations are restricted to safe Tavern file paths
   assert.equal(upload.options.headers['X-Test'], 'bridge');
   const deletion = calls.find(call => call.url === '/api/files/delete');
   assert.deepEqual(JSON.parse(deletion.options.body), { path: '/user/files/portable.bin' });
+});
+
+test('browser host rejects an unsafe path returned by the upload endpoint', async () => {
+  const host = createBrowserHost({
+    extensionSettings: {},
+    localStorage: memoryLocalStorage(),
+    pluginVersions: {},
+    saveSettingsDebounced: () => {},
+    fetchImpl: async url => {
+      if (url === '/api/files/upload') {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ path: '/user/files/../escaped.bin' }),
+        };
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+  });
+
+  await assert.rejects(
+    () => host.files.upload('portable.bin', Uint8Array.from([1])),
+    /upload response is invalid/i,
+  );
 });
 
 test('plugin version loader reads only manifest versions and tolerates missing plugins', async () => {

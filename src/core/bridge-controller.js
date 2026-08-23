@@ -46,7 +46,7 @@ export class BridgeController {
     return typeof adapter.diagnose === 'function' ? adapter.diagnose(this.host) : null;
   }
 
-  async capture(adapterId, { includeSensitive = false, sensitiveCodec } = {}) {
+  async capture(adapterId, { includeSensitive = false, sensitiveCodec, allowRegression = false } = {}) {
     const adapter = this.getAdapter(adapterId);
     const effectiveIncludeSensitive = includeSensitive || (
       sensitiveCodec !== null
@@ -83,7 +83,7 @@ export class BridgeController {
       if (previous.sensitiveDataIncluded && !effectiveIncludeSensitive) {
         throw new Error('Refusing to replace an encrypted snapshot without sensitive sync enabled');
       }
-      if (typeof adapter.captureRegression === 'function') {
+      if (!allowRegression && typeof adapter.captureRegression === 'function') {
         const regression = await adapter.captureRegression(previous.payload, captured.payload);
         if (regression) {
           const result = {
@@ -157,6 +157,16 @@ export class BridgeController {
 
     const current = await adapter.capture(this.host, { includeSensitive: false });
     if (!current.available) return { status: 'missing-target', adapterId, snapshot };
+    if (current.status === 'deferred' || current.payload === null || current.payload === undefined) {
+      return {
+        status: 'conflict',
+        adapterId,
+        snapshot,
+        adapterPayload,
+        hardConflict: false,
+        reason: current.reason ?? 'local-state-not-comparable',
+      };
+    }
     const currentHash = await sha256Json(stripRedacted(current.payload));
     if (currentHash === snapshot.nonSensitiveHash || adapterPreview.status === 'noop') {
       return { status: 'noop', adapterId, snapshot, adapterPayload, currentHash };

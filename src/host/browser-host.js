@@ -21,6 +21,9 @@ export function createBrowserHost({
   indexedDB = globalThis.indexedDB,
   IDBKeyRange = globalThis.IDBKeyRange,
   BroadcastChannelImpl = globalThis.BroadcastChannel,
+  documentImpl = globalThis.document,
+  CustomEventImpl = globalThis.CustomEvent,
+  runtimeGlobal = globalThis,
 }) {
   const persistSettingsSoon = () => {
     if (typeof saveSettingsImmediate === 'function') {
@@ -87,6 +90,17 @@ export function createBrowserHost({
         } finally {
           broadcaster.close?.();
         }
+      },
+    },
+    stChatu8: {
+      async refresh() {
+        if (documentImpl?.dispatchEvent && typeof CustomEventImpl === 'function') {
+          documentImpl.dispatchEvent(new CustomEventImpl('st-chatu8-config-updated', {
+            detail: { changed: { $ttSyncBridge: true } },
+          }));
+        }
+        const reload = runtimeGlobal?.loadSilterTavernChatu8Settings;
+        if (typeof reload === 'function') await reload();
       },
     },
     pluginVersion(pluginId) {

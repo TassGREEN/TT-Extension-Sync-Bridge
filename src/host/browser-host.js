@@ -20,6 +20,7 @@ export function createBrowserHost({
   tavernHelperProvider = () => globalThis.TavernHelper,
   indexedDB = globalThis.indexedDB,
   IDBKeyRange = globalThis.IDBKeyRange,
+  BroadcastChannelImpl = globalThis.BroadcastChannel,
 }) {
   const persistSettingsSoon = () => {
     if (typeof saveSettingsImmediate === 'function') {
@@ -76,6 +77,18 @@ export function createBrowserHost({
       },
     },
     indexedDb: createIndexedDbHost({ indexedDB, IDBKeyRange }),
+    broadcast: {
+      post(channel, message) {
+        if (typeof BroadcastChannelImpl !== 'function') return false;
+        const broadcaster = new BroadcastChannelImpl(channel);
+        try {
+          broadcaster.postMessage(clone(message));
+          return true;
+        } finally {
+          broadcaster.close?.();
+        }
+      },
+    },
     pluginVersion(pluginId) {
       return pluginVersions[pluginId] ?? null;
     },

@@ -2,7 +2,12 @@ import { createSnapshot, verifySnapshot } from './snapshot.js';
 import { sha256Json } from './hash.js';
 import { stripRedacted } from './redaction.js';
 
-const SENSITIVE_ADAPTER_IDS = new Set(['api-manager-2', 'dream-card-agent', 'st-chatu8']);
+const SENSITIVE_ADAPTER_IDS = new Set([
+  'tavern-helper-global-scripts',
+  'api-manager-2',
+  'dream-card-agent',
+  'st-chatu8',
+]);
 
 async function payloadForSnapshot(adapter, snapshot) {
   if (snapshot.adapterVersion === adapter.version) return snapshot.payload;

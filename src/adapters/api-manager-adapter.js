@@ -62,12 +62,47 @@ function looksLikeApiConfig(value) {
   );
 }
 
+function valueKind(value) {
+  if (Array.isArray(value)) return 'array';
+  if (value === null) return 'null';
+  if (isPlainObject(value)) return 'object';
+  return typeof value;
+}
+
+function topLevelObjectFields(value) {
+  if (!isPlainObject(value)) return [];
+  return Object.entries(value).slice(0, 20).map(([name, item]) => ({
+    name: String(name).slice(0, 80),
+    type: valueKind(item),
+  }));
+}
+
+function findConfigArrayCandidates(value, maxDepth = 2, path = [], depth = 0, candidates = []) {
+  if (!isPlainObject(value) || depth > maxDepth) return candidates;
+  for (const [key, child] of Object.entries(value)) {
+    const nextPath = [...path, key];
+    if (
+      Array.isArray(child)
+      && child.length > 0
+      && child.every(item => looksLikeApiConfig(item))
+    ) {
+      candidates.push({ configs: child, path: nextPath });
+      continue;
+    }
+    if (isPlainObject(child) && depth < maxDepth) {
+      findConfigArrayCandidates(child, maxDepth, nextPath, depth + 1, candidates);
+    }
+  }
+  return candidates;
+}
+
 function normalizeConfigStorageValue(value, nestedDepth = 0) {
   if (Array.isArray(value)) {
     return {
       configs: value,
       embeddedCategories: undefined,
       shape: nestedDepth > 0 ? 'nested-json-array' : 'array',
+      candidatePath: null,
     };
   }
 
@@ -76,7 +111,12 @@ function normalizeConfigStorageValue(value, nestedDepth = 0) {
     try {
       nested = JSON.parse(value);
     } catch {
-      return { configs: null, embeddedCategories: undefined, shape: 'json-string' };
+      return {
+        configs: null,
+        embeddedCategories: undefined,
+        shape: 'json-string',
+        candidatePath: null,
+      };
     }
     return normalizeConfigStorageValue(nested, nestedDepth + 1);
   }
@@ -87,11 +127,17 @@ function normalizeConfigStorageValue(value, nestedDepth = 0) {
         configs: value.configs,
         embeddedCategories: Array.isArray(value.categories) ? value.categories : undefined,
         shape: 'wrapper-configs',
+        candidatePath: ['configs'],
       };
     }
 
     if (looksLikeApiConfig(value)) {
-      return { configs: [value], embeddedCategories: undefined, shape: 'single-config-object' };
+      return {
+        configs: [value],
+        embeddedCategories: undefined,
+        shape: 'single-config-object',
+        candidatePath: null,
+      };
     }
 
     const keys = Object.keys(value);
@@ -106,17 +152,57 @@ function normalizeConfigStorageValue(value, nestedDepth = 0) {
           .map(key => value[key]),
         embeddedCategories: undefined,
         shape: 'numeric-config-map',
+        candidatePath: null,
+      };
+    }
+
+    if (
+      keys.length > 0
+      && keys.every(key => looksLikeApiConfig(value[key]))
+    ) {
+      return {
+        configs: keys.map(key => value[key]),
+        embeddedCategories: undefined,
+        shape: 'named-config-map',
+        candidatePath: null,
+      };
+    }
+
+    const candidates = findConfigArrayCandidates(value);
+    if (candidates.length === 1) {
+      return {
+        configs: candidates[0].configs,
+        embeddedCategories: undefined,
+        shape: 'generic-wrapper-configs',
+        candidatePath: candidates[0].path,
       };
     }
 
     if (value.$ttSyncBridge === 'redacted-v1') {
-      return { configs: null, embeddedCategories: undefined, shape: 'bridge-redacted-marker' };
+      return {
+        configs: null,
+        embeddedCategories: undefined,
+        shape: 'bridge-redacted-marker',
+        candidatePath: null,
+      };
     }
-    return { configs: null, embeddedCategories: undefined, shape: 'object' };
+    return {
+      configs: null,
+      embeddedCategories: undefined,
+      shape: candidates.length > 1 ? 'ambiguous-object' : 'object',
+      candidatePath: null,
+    };
   }
 
-  if (value === null) return { configs: null, embeddedCategories: undefined, shape: 'null' };
-  return { configs: null, embeddedCategories: undefined, shape: typeof value };
+  if (value === null) {
+    return { configs: null, embeddedCategories: undefined, shape: 'null', candidatePath: null };
+  }
+  return {
+    configs: null,
+    embeddedCategories: undefined,
+    shape: typeof value,
+    candidatePath: null,
+  };
 }
 
 function parseConfigStorage(raw) {
@@ -131,7 +217,14 @@ function parseConfigStorage(raw) {
 function inspectConfigStorage(host) {
   const raw = host.localStorage.get(CONFIGS_KEY);
   if (raw === null) {
-    return { shape: 'missing', readable: true, configCount: 0, embeddedCategories: false };
+    return {
+      shape: 'missing',
+      readable: true,
+      configCount: 0,
+      embeddedCategories: false,
+      candidatePath: null,
+      objectFields: [],
+    };
   }
   try {
     const parsed = parseManagedJson(CONFIGS_KEY, raw);
@@ -141,9 +234,18 @@ function inspectConfigStorage(host) {
       readable: Array.isArray(normalized.configs),
       configCount: Array.isArray(normalized.configs) ? normalized.configs.length : null,
       embeddedCategories: Array.isArray(normalized.embeddedCategories),
+      candidatePath: Array.isArray(normalized.candidatePath) ? normalized.candidatePath : null,
+      objectFields: topLevelObjectFields(parsed),
     };
   } catch {
-    return { shape: 'invalid-json', readable: false, configCount: null, embeddedCategories: false };
+    return {
+      shape: 'invalid-json',
+      readable: false,
+      configCount: null,
+      embeddedCategories: false,
+      candidatePath: null,
+      objectFields: [],
+    };
   }
 }
 
@@ -285,6 +387,8 @@ export const apiManagerAdapter = {
       configStorageReadable: storage.readable,
       configCount: storage.configCount,
       embeddedCategories: storage.embeddedCategories,
+      configStorageCandidatePath: storage.candidatePath,
+      configStorageObjectFields: storage.objectFields,
     };
   },
 

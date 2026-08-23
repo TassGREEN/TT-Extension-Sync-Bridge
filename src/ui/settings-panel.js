@@ -8,7 +8,7 @@ function statusText(status) {
     applied: '已恢复',
     noop: '已同步',
     'would-change': '待恢复',
-    conflict: '冲突',
+    conflict: '本地有修改',
     incompatible: '版本不兼容',
     'missing-target': '目标未安装',
     deferred: '等待插件初始化',
@@ -18,18 +18,34 @@ function statusText(status) {
   })[status] ?? '未检查';
 }
 
-function shortHash(hash) {
-  return typeof hash === 'string' ? hash.slice(0, 16) : '—';
+function formatTime(value) {
+  if (typeof value !== 'string') return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+
+  const now = new Date();
+  const sameDay = (
+    date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth()
+    && date.getDate() === now.getDate()
+  );
+  const hour = String(date.getHours()).padStart(2, '0');
+  const minute = String(date.getMinutes()).padStart(2, '0');
+  if (sameDay) return `今天 ${hour}:${minute}`;
+  return `${date.getMonth() + 1}月${date.getDate()}日 ${hour}:${minute}`;
 }
 
-function downloadJson(filename, value) {
-  const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
+function latestTime(...values) {
+  let latest = null;
+  let latestMs = -Infinity;
+  for (const value of values) {
+    if (typeof value !== 'string') continue;
+    const time = Date.parse(value);
+    if (Number.isNaN(time) || time <= latestMs) continue;
+    latest = value;
+    latestMs = time;
+  }
+  return latest;
 }
 
 async function copyText(value, textarea) {
@@ -48,6 +64,7 @@ export function mountBridgeSettingsPanel(runtime) {
   if (existing) return { root: existing, refreshStatus: async () => {} };
   const settingsContainer = document.querySelector('#extensions_settings');
   if (!settingsContainer) return null;
+
   const root = document.createElement('div');
   root.id = 'tt-extension-sync-bridge-settings';
   root.className = 'extension_container tt-sync-bridge';
@@ -64,20 +81,28 @@ export function mountBridgeSettingsPanel(runtime) {
         <div class="ttsb-sensitive-box">
           <label class="checkbox_label"><input data-setting="sensitiveDataSync" type="checkbox"> 加密同步敏感配置（API 管理器 / 梦境创客 / st-chatu8）</label>
           <input data-setting="sensitivePassphrase" type="password" autocomplete="off" minlength="8" placeholder="同步口令（至少 8 位）" disabled>
-          <small>口令保存在本机 Bridge 专用 localStorage，不进入 TT 同步快照；另一台设备首次使用时需输入同一口令。</small>
+          <small>口令只保存在本机，不进入 TT 同步快照；另一台设备首次使用时输入同一口令。</small>
           <button type="button" class="menu_button" data-action="forget-passphrase">忘记本机口令</button>
         </div>
-        <div class="ttsb-adapters"></div>
+
+        <details class="ttsb-subdrawer ttsb-sync-range">
+          <summary>同步范围 <small>默认全部</small></summary>
+          <div class="ttsb-adapters"></div>
+        </details>
+
         <div class="ttsb-actions">
           <button type="button" class="menu_button" data-action="capture">立即采集</button>
           <button type="button" class="menu_button" data-action="preview">从同步快照恢复前预览</button>
           <button type="button" class="menu_button" data-action="restore" disabled>确认并恢复</button>
-          <button type="button" class="menu_button" data-action="diagnostics">导出脱敏诊断</button>
-          <button type="button" class="menu_button" data-action="copy-diagnostics">生成并复制诊断日志</button>
+          <button type="button" class="menu_button" data-action="copy-diagnostics">复制诊断日志</button>
         </div>
         <div class="ttsb-summary" role="status"></div>
-        <textarea class="ttsb-diagnostics-log" data-diagnostics-log rows="14" readonly spellcheck="false" hidden></textarea>
         <div class="ttsb-status-list"></div>
+
+        <details class="ttsb-subdrawer ttsb-diagnostics-drawer" data-diagnostics-drawer>
+          <summary>诊断日志</summary>
+          <textarea class="ttsb-diagnostics-log" data-diagnostics-log rows="14" readonly spellcheck="false"></textarea>
+        </details>
       </div>
     </div>`;
 
@@ -88,7 +113,9 @@ export function mountBridgeSettingsPanel(runtime) {
   const sensitiveToggle = root.querySelector('[data-setting="sensitiveDataSync"]');
   const sensitivePassphrase = root.querySelector('[data-setting="sensitivePassphrase"]');
   const diagnosticsLog = root.querySelector('[data-diagnostics-log]');
+  const diagnosticsDrawer = root.querySelector('[data-diagnostics-drawer]');
   let previews = null;
+
   root.querySelector('[data-bridge-version]').textContent = `v${runtime.bridgeVersion ?? 'unknown'}`;
   sensitivePassphrase.value = runtime.passphrases.get();
 
@@ -157,20 +184,33 @@ export function mountBridgeSettingsPanel(runtime) {
       const snapshot = await runtime.snapshotStore.getSnapshot(adapter.id).catch(() => null);
       const state = runtime.localState.getAdapterState(adapter.id);
       const preview = previews?.find(item => item.adapterId === adapter.id);
+      const effectiveStatus = preview?.status ?? state.lastResult?.status ?? 'unknown';
+
       const row = document.createElement('div');
-      row.className = `ttsb-status ttsb-status-${preview?.status ?? state.lastResult?.status ?? 'unknown'}`;
+      row.className = `ttsb-status ttsb-status-${effectiveStatus}`;
+
       const title = document.createElement('strong');
       title.textContent = adapter.label;
+
       const status = document.createElement('span');
-      status.textContent = statusText(preview?.status ?? state.lastResult?.status);
+      status.className = 'ttsb-status-text';
+      status.textContent = statusText(effectiveStatus);
+
       const metadata = document.createElement('small');
+      metadata.className = 'ttsb-status-meta';
+      const lastCapture = latestTime(state.lastCapturedAt, state.lastCheckedAt, snapshot?.capturedAt);
+      const encrypted = snapshot?.sensitiveDataIncluded ? ' · 加密快照' : '';
       metadata.textContent = snapshot
-        ? `快照 ${snapshot.capturedAt} · rev ${snapshot.sourceRevision} · 内容 ${shortHash(snapshot.contentHash)} · 非敏感 ${shortHash(snapshot.nonSensitiveHash)} · 来源 ${snapshot.deviceId}`
-        : '尚无同步快照';
+        ? `上次采集：${formatTime(lastCapture)}${encrypted}`
+        : '上次采集：尚无快照';
+
       row.append(title, status, metadata);
-      if (preview?.reason) {
+
+      const reasonText = preview?.reason || (effectiveStatus === 'failed' ? state.error?.message : null);
+      if (reasonText) {
         const reason = document.createElement('small');
-        reason.textContent = `原因：${preview.reason}`;
+        reason.className = 'ttsb-status-reason';
+        reason.textContent = `原因：${reasonText}`;
         row.append(reason);
       }
       statusContainer.append(row);
@@ -193,6 +233,7 @@ export function mountBridgeSettingsPanel(runtime) {
     restoreButton.disabled = true;
     syncControls();
   });
+
   root.querySelector('[data-setting="autoCapture"]').addEventListener('change', async event => {
     runtime.preferences.update({ autoCapture: event.currentTarget.checked });
     if (event.currentTarget.checked) {
@@ -208,22 +249,26 @@ export function mountBridgeSettingsPanel(runtime) {
       await refreshStatus();
     }
   });
+
   sensitiveToggle.addEventListener('change', event => {
     runtime.preferences.update({ sensitiveDataSync: event.currentTarget.checked });
     previews = null;
     restoreButton.disabled = true;
     syncControls();
   });
+
   sensitivePassphrase.addEventListener('input', () => {
     previews = null;
     restoreButton.disabled = true;
   });
+
   sensitivePassphrase.addEventListener('change', () => {
     if (sensitivePassphrase.value.length >= 8) {
       runtime.passphrases.set(sensitivePassphrase.value);
       summary.textContent = '同步口令已保存在本机。';
     }
   });
+
   root.querySelector('[data-action="forget-passphrase"]').addEventListener('click', () => {
     runtime.passphrases.clear();
     runtime.preferences.update({ sensitiveDataSync: false });
@@ -233,6 +278,7 @@ export function mountBridgeSettingsPanel(runtime) {
     summary.textContent = '本机保存的同步口令已清除；同步快照未删除。';
     syncControls();
   });
+
   for (const checkbox of root.querySelectorAll('[data-adapter-id]')) {
     checkbox.addEventListener('change', event => {
       runtime.preferences.update({ adapters: { [event.currentTarget.dataset.adapterId]: event.currentTarget.checked } });
@@ -281,7 +327,7 @@ export function mountBridgeSettingsPanel(runtime) {
     const conflicts = previews.filter(item => item.status === 'conflict').length;
     const failures = previews.filter(item => item.status === 'failed').length;
     const locked = previews.filter(item => item.status === 'locked').length;
-    summary.textContent = `预览完成：${changes} 项待恢复，${conflicts} 项冲突，${locked} 项等待口令，${failures} 项失败。`;
+    summary.textContent = `预览完成：${changes} 项待恢复，${conflicts} 项本地有修改，${locked} 项等待口令，${failures} 项失败。`;
     restoreButton.disabled = changes + conflicts === 0 || failures > 0;
     await refreshStatus();
   });
@@ -312,21 +358,15 @@ export function mountBridgeSettingsPanel(runtime) {
     await refreshStatus();
   });
 
-  root.querySelector('[data-action="diagnostics"]').addEventListener('click', async () => {
-    const diagnostics = await createDiagnostics();
-    downloadJson(`tt-extension-sync-bridge-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`, diagnostics);
-    summary.textContent = '脱敏诊断已导出；其中不含快照 payload、聊天或凭据值。';
-  });
-
   root.querySelector('[data-action="copy-diagnostics"]').addEventListener('click', async () => {
     const diagnostics = await busy('正在生成实时脱敏诊断…', () => createDiagnostics());
     const serialized = JSON.stringify(diagnostics, null, 2);
     diagnosticsLog.value = serialized;
-    diagnosticsLog.hidden = false;
+    diagnosticsDrawer.open = true;
     const copied = await copyText(serialized, diagnosticsLog);
     summary.textContent = copied
-      ? '脱敏诊断日志已显示并复制，可直接发给我。'
-      : '脱敏诊断日志已显示；请长按文本框全选复制后发给我。';
+      ? '诊断日志已生成并复制。'
+      : '诊断日志已展开；请长按文本框全选复制。';
   });
 
   settingsContainer.append(root);

@@ -1,9 +1,11 @@
 import { canonicalJson } from '../core/canonical-json.js';
-import { mergeRedacted, redactClone } from '../core/redaction.js';
+import { mergeRedacted, redactClone, stripRedacted } from '../core/redaction.js';
+import { isEncryptedEnvelope } from '../core/sensitive-envelope.js';
 
 export const ST_CHATU8_SETTINGS_KEY = 'st-chatu8';
 const PLUGIN_ID = 'third-party/st-chatu8';
 const SUPPORTED_VERSION = /^2\.8\./;
+const SENSITIVE_CONTEXT = 'st-chatu8/settings/v1';
 const GALLERY_DATABASE = 'chatu8_gallery';
 const GALLERY_DATABASE_VERSION = 6;
 const MANUAL_TAG_STORE = 'tags';
@@ -33,6 +35,7 @@ const DEVICE_ONLY_PATHS = [
   '$.settings.chatu8_fab_video_paths',
   '$.settings.jiuguanStorage',
 ];
+const DEVICE_ONLY_KEYS = new Set(DEVICE_ONLY_PATHS.map(path => path.slice('$.settings.'.length)));
 
 const SENSITIVE_KEY_PATTERNS = [
   /^api[_-]?key$/i,
@@ -81,7 +84,7 @@ const INDEXED_DB_SUPPORT = Object.freeze([
 ]);
 
 function clone(value) {
-  return JSON.parse(JSON.stringify(value));
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
 function isPlainObject(value) {
@@ -156,11 +159,14 @@ function manualTagsEqual(left, right) {
 }
 
 function validatePayload(payload) {
-  if (!isPlainObject(payload) || payload.dataVersion !== 1 || !isPlainObject(payload.settings)) {
+  if (!isPlainObject(payload) || payload.dataVersion !== 2 || !isPlainObject(payload.settings)) {
     throw new TypeError('st-chatu8 payload is invalid');
   }
   if (!supported(payload.pluginVersion)) {
     throw new Error(`Unsupported st-chatu8 snapshot version ${String(payload.pluginVersion)}`);
+  }
+  if (payload.encryptedSettings !== undefined && !isEncryptedEnvelope(payload.encryptedSettings)) {
+    throw new TypeError('st-chatu8 encrypted settings payload is invalid');
   }
   if (!Array.isArray(payload.indexedDb) || canonicalJson(payload.indexedDb) !== canonicalJson(INDEXED_DB_SUPPORT)) {
     throw new TypeError('st-chatu8 IndexedDB support metadata is invalid');
@@ -175,12 +181,51 @@ function validatePayload(payload) {
   }
 }
 
+function preserveDeviceOnly(current, restored) {
+  if (!isPlainObject(current) || !isPlainObject(restored)) return restored;
+  for (const key of DEVICE_ONLY_KEYS) {
+    if (Object.hasOwn(current, key)) restored[key] = clone(current[key]);
+    else delete restored[key];
+  }
+  return restored;
+}
+
+async function unlockedSettings(payload, sensitiveCodec) {
+  if (payload.encryptedSettings === undefined) {
+    return { settings: payload.settings, containsSensitive: false };
+  }
+  if (!sensitiveCodec?.decrypt) return null;
+  const sensitive = await sensitiveCodec.decrypt(payload.encryptedSettings, SENSITIVE_CONTEXT);
+  if (!isPlainObject(sensitive) || !isPlainObject(sensitive.settings)) {
+    throw new TypeError('st-chatu8 decrypted settings payload is invalid');
+  }
+  return { settings: sensitive.settings, containsSensitive: true };
+}
+
+function mergeSettings(current, unlocked) {
+  if (unlocked.containsSensitive) {
+    return preserveDeviceOnly(current, clone(unlocked.settings));
+  }
+  return mergeRedacted(current, unlocked.settings, {
+    preserveLocalKeyPatterns: SENSITIVE_KEY_PATTERNS,
+  });
+}
+
 export const stChatu8Adapter = {
   id: 'st-chatu8',
   label: 'st-chatu8',
-  version: 1,
+  version: 2,
 
-  async capture(host, { includeSensitive = false } = {}) {
+  migratePayload(payload, fromVersion) {
+    if (fromVersion !== 1 || !isPlainObject(payload) || payload.dataVersion !== 1) {
+      throw new Error(`Unsupported st-chatu8 adapter migration from version ${String(fromVersion)}`);
+    }
+    const migrated = { ...payload, dataVersion: 2 };
+    validatePayload(migrated);
+    return migrated;
+  },
+
+  async capture(host, { includeSensitive = false, sensitiveCodec } = {}) {
     const current = host.extensionSettings.get(ST_CHATU8_SETTINGS_KEY);
     const pluginVersion = host.pluginVersion(PLUGIN_ID);
     if (!isPlainObject(current) && pluginVersion === null) {
@@ -192,14 +237,28 @@ export const stChatu8Adapter = {
     if (!isPlainObject(current)) {
       throw new TypeError('st-chatu8 settings are unavailable or malformed');
     }
+    if (includeSensitive && !sensitiveCodec?.encrypt) {
+      throw new Error('An encryption passphrase is required for st-chatu8 sensitive sync');
+    }
     const redacted = redactClone(
       { settings: current },
       {
-        includeSensitive,
         sensitiveKeyPatterns: SENSITIVE_KEY_PATTERNS,
         excludedPaths: DEVICE_ONLY_PATHS,
       },
     );
+    let encryptedSettings;
+    if (includeSensitive) {
+      const portableRedacted = redactClone(
+        { settings: current },
+        { excludedPaths: DEVICE_ONLY_PATHS },
+      );
+      const portable = stripRedacted(portableRedacted.value);
+      if (!isPlainObject(portable?.settings)) {
+        throw new TypeError('Unable to build portable st-chatu8 settings');
+      }
+      encryptedSettings = await sensitiveCodec.encrypt({ settings: portable.settings }, SENSITIVE_CONTEXT);
+    }
     const manualTags = await readManualTags(host);
     if (manualTags.incompatibleVersion !== null) {
       throw new Error(`Unsupported st-chatu8 gallery database version ${manualTags.incompatibleVersion}`);
@@ -208,9 +267,10 @@ export const stChatu8Adapter = {
       throw new Error(`Unable to capture st-chatu8 manual tags: ${manualTags.reason}`);
     }
     const payload = {
-      dataVersion: 1,
+      dataVersion: 2,
       pluginVersion,
       settings: redacted.value.settings,
+      ...(encryptedSettings ? { encryptedSettings } : {}),
       indexedDb: clone(INDEXED_DB_SUPPORT),
       manualTags: { captured: manualTags.captured, records: manualTags.records },
     };
@@ -226,8 +286,10 @@ export const stChatu8Adapter = {
     };
   },
 
-  async preview(host, payload) {
+  async preview(host, payload, { sensitiveCodec } = {}) {
     validatePayload(payload);
+    const unlocked = await unlockedSettings(payload, sensitiveCodec);
+    if (unlocked === null) return { status: 'locked', reason: 'passphrase-required' };
     const current = host.extensionSettings.get(ST_CHATU8_SETTINGS_KEY);
     const targetVersion = host.pluginVersion(PLUGIN_ID);
     if (!isPlainObject(current) && targetVersion === null) return { status: 'missing-target' };
@@ -235,9 +297,7 @@ export const stChatu8Adapter = {
       return { status: 'incompatible', message: `Target st-chatu8 version ${String(targetVersion)} is not supported` };
     }
     if (!isPlainObject(current)) return { status: 'empty-target' };
-    const restored = mergeRedacted(current, payload.settings, {
-      preserveLocalKeyPatterns: SENSITIVE_KEY_PATTERNS,
-    });
+    const restored = mergeSettings(current, unlocked);
     const settingsEqual = canonicalJson(current) === canonicalJson(restored);
     if (!payload.manualTags.captured) {
       return { status: settingsEqual ? 'noop' : 'would-change' };
@@ -259,8 +319,10 @@ export const stChatu8Adapter = {
     };
   },
 
-  async restore(host, payload) {
+  async restore(host, payload, { sensitiveCodec } = {}) {
     validatePayload(payload);
+    const unlocked = await unlockedSettings(payload, sensitiveCodec);
+    if (unlocked === null) return { status: 'locked', reason: 'passphrase-required' };
     const current = host.extensionSettings.get(ST_CHATU8_SETTINGS_KEY);
     const targetVersion = host.pluginVersion(PLUGIN_ID);
     if (!isPlainObject(current) && targetVersion === null) return { status: 'missing-target' };
@@ -274,32 +336,8 @@ export const stChatu8Adapter = {
         message: `Target st-chatu8 gallery database version ${currentManualTags.incompatibleVersion} is not supported`,
       };
     }
-    if (!isPlainObject(current)) {
-      const initialized = mergeRedacted(undefined, payload.settings, {
-        preserveLocalKeyPatterns: SENSITIVE_KEY_PATTERNS,
-      });
-      host.extensionSettings.set(ST_CHATU8_SETTINGS_KEY, initialized);
-      await host.saveSettings();
-      if (payload.manualTags.captured) {
-        if (!currentManualTags.captured) return { status: 'deferred', reason: currentManualTags.reason };
-        if (!manualTagsEqual(currentManualTags.records, payload.manualTags.records)) {
-          const replaced = await host.indexedDb.replaceByIndex({
-            database: GALLERY_DATABASE,
-            version: GALLERY_DATABASE_VERSION,
-            store: MANUAL_TAG_STORE,
-            index: MANUAL_TAG_INDEX,
-            value: MANUAL_TAG_INDEX_VALUE,
-            records: normalizeManualTags(payload.manualTags.records),
-          });
-          if (!replaced?.available) return { status: 'deferred', reason: replaced?.reason ?? 'indexeddb-unavailable' };
-        }
-      }
-      return { status: 'applied' };
-    }
-    const restored = mergeRedacted(current, payload.settings, {
-      preserveLocalKeyPatterns: SENSITIVE_KEY_PATTERNS,
-    });
-    const settingsChanged = canonicalJson(current) !== canonicalJson(restored);
+    const restored = mergeSettings(current, unlocked);
+    const settingsChanged = !isPlainObject(current) || canonicalJson(current) !== canonicalJson(restored);
     let tagsChanged = false;
     if (payload.manualTags.captured) {
       if (!currentManualTags.captured) {

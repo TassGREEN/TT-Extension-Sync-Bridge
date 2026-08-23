@@ -27,11 +27,15 @@ function configs(overrides = {}) {
   }];
 }
 
+function categories() {
+  return [{ id: 'cat-1', name: '常用', color: '#ffffff', order: 0 }];
+}
+
 function createApiManagerHost(overrides = {}) {
   const host = createMemoryHost({
     localStorage: {
       api_configs_manager: JSON.stringify(configs()),
-      api_configs_categories: JSON.stringify([{ id: 'cat-1', name: '常用', color: '#ffffff', order: 0 }]),
+      api_configs_categories: JSON.stringify(categories()),
       api_configs_collapsed_categories: JSON.stringify(['cat-1']),
       api_configs_category_switch_indexes: JSON.stringify({ 'cat-1': 2 }),
       stb_api_management_settings: JSON.stringify({ enabled: true, lockTavernConfig: true }),
@@ -107,9 +111,66 @@ test('API manager non-sensitive restore preserves the target config as a whole',
   assert.equal(first.status, 'applied');
   assert.equal(second.status, 'noop');
   assert.deepEqual(JSON.parse(state.localStorage.api_configs_manager), targetConfig);
-  assert.deepEqual(JSON.parse(state.localStorage.api_configs_categories), [{ id: 'cat-1', name: '常用', color: '#ffffff', order: 0 }]);
+  assert.deepEqual(JSON.parse(state.localStorage.api_configs_categories), categories());
   assert.deepEqual(JSON.parse(state.localStorage.api_configs_collapsed_categories), ['target-ui']);
   assert.deepEqual(JSON.parse(state.localStorage.stb_api_management_settings), { enabled: true, lockTavernConfig: true });
+});
+
+test('API manager capture accepts an export-style configs wrapper and embedded categories', async () => {
+  const codec = createPassphraseSensitiveCodec('wrapper storage passphrase');
+  const host = createMemoryHost({
+    localStorage: {
+      api_configs_manager: JSON.stringify({
+        version: '1.0',
+        configs: configs(),
+        categories: categories(),
+      }),
+      api_configs_category_switch_indexes: JSON.stringify({ 'cat-1': 1 }),
+      stb_api_management_settings: JSON.stringify({ enabled: true, lockTavernConfig: true }),
+    },
+  });
+  host.hasTavernScript = id => id === API_MANAGER_SCRIPT_ID;
+
+  const captured = await apiManagerAdapter.capture(host, { includeSensitive: true, sensitiveCodec: codec });
+  const decrypted = await codec.decrypt(captured.payload.encryptedConfigs, 'api-manager-2/configs/v1');
+
+  assert.deepEqual(decrypted.configs, configs());
+  assert.deepEqual(captured.payload.entries.api_configs_categories, categories());
+  assert.equal(captured.diagnostics.configStorageShape, 'wrapper-configs');
+  assert.deepEqual(apiManagerAdapter.diagnose(host), {
+    sourceVersion: '2.0.3',
+    configStorageShape: 'wrapper-configs',
+    configStorageReadable: true,
+    configCount: 1,
+    embeddedCategories: true,
+  });
+});
+
+test('API manager capture accepts a double-encoded config array', async () => {
+  const codec = createPassphraseSensitiveCodec('nested json storage passphrase');
+  const host = createApiManagerHost({
+    api_configs_manager: JSON.stringify(JSON.stringify(configs())),
+  });
+
+  const captured = await apiManagerAdapter.capture(host, { includeSensitive: true, sensitiveCodec: codec });
+  const decrypted = await codec.decrypt(captured.payload.encryptedConfigs, 'api-manager-2/configs/v1');
+
+  assert.deepEqual(decrypted.configs, configs());
+  assert.equal(captured.diagnostics.configStorageShape, 'nested-json-array');
+});
+
+test('API manager restore canonicalizes a recoverable single-config object into the official array format', async () => {
+  const codec = createPassphraseSensitiveCodec('single object storage passphrase');
+  const source = createApiManagerHost();
+  const captured = await apiManagerAdapter.capture(source, { includeSensitive: true, sensitiveCodec: codec });
+  const target = createApiManagerHost({
+    api_configs_manager: JSON.stringify(configs()[0]),
+  });
+
+  assert.equal((await apiManagerAdapter.preview(target, captured.payload, { sensitiveCodec: codec })).status, 'would-change');
+  assert.equal((await apiManagerAdapter.restore(target, captured.payload, { sensitiveCodec: codec })).status, 'applied');
+  assert.deepEqual(JSON.parse(target.inspect().localStorage.api_configs_manager), configs());
+  assert.equal(apiManagerAdapter.diagnose(target).configStorageShape, 'array');
 });
 
 test('API manager migration discards legacy partially-redacted configs instead of restoring malformed data', () => {
@@ -137,6 +198,16 @@ test('API manager capture rejects malformed managed JSON without changing storag
 
   await assert.rejects(() => apiManagerAdapter.capture(host), /api_configs_manager.*valid JSON/i);
   assert.equal(host.inspect().localStorage.api_configs_manager, '{broken');
+  assert.equal(apiManagerAdapter.diagnose(host).configStorageShape, 'invalid-json');
+});
+
+test('API manager rejects an unsupported object shape without mutating it', async () => {
+  const raw = JSON.stringify({ unexpected: true });
+  const host = createApiManagerHost({ api_configs_manager: raw });
+
+  await assert.rejects(() => apiManagerAdapter.capture(host), /unsupported storage shape: object/i);
+  assert.equal(host.inspect().localStorage.api_configs_manager, raw);
+  assert.equal(apiManagerAdapter.diagnose(host).configStorageShape, 'object');
 });
 
 test('API manager recognizes a re-imported Tavern Helper script by name rather than UUID', async () => {

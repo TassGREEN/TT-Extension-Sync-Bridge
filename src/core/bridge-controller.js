@@ -83,6 +83,23 @@ export class BridgeController {
       if (previous.sensitiveDataIncluded && !effectiveIncludeSensitive) {
         throw new Error('Refusing to replace an encrypted snapshot without sensitive sync enabled');
       }
+      if (typeof adapter.captureRegression === 'function') {
+        const regression = await adapter.captureRegression(previous.payload, captured.payload);
+        if (regression) {
+          const result = {
+            status: 'deferred',
+            adapterId,
+            reason: regression.reason ?? 'capture-regression',
+            diagnostics: regression.diagnostics ?? captured.diagnostics,
+          };
+          this.localState.setAdapterState(adapterId, {
+            lastResult: result,
+            lastCheckedAt: this.now(),
+            error: null,
+          });
+          return result;
+        }
+      }
     }
     const nextRevision = previous === null ? 1 : previous.sourceRevision + 1;
     const snapshot = await createSnapshot({

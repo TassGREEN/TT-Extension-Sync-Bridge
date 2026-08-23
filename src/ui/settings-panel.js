@@ -166,13 +166,10 @@ export function mountBridgeSettingsPanel(runtime) {
     return codec;
   }
 
-  async function captureEnabledAdapters(codec, { allowRegression = false } = {}) {
+  async function captureEnabledAdapters(codec) {
     const output = [];
     for (const adapterId of enabledAdapterIds()) {
-      output.push(...await runtime.controller.captureAll([adapterId], {
-        sensitiveCodec: codec,
-        allowRegression,
-      }));
+      output.push(...await runtime.controller.captureAll([adapterId], { sensitiveCodec: codec }));
     }
     return output;
   }
@@ -320,9 +317,7 @@ export function mountBridgeSettingsPanel(runtime) {
       summary.textContent = error instanceof Error ? error.message : String(error);
       return;
     }
-    const results = await busy('正在采集并写入 Extension Store…', () => (
-      captureEnabledAdapters(codec, { allowRegression: true })
-    ));
+    const results = await busy('正在采集并写入 Extension Store…', () => captureEnabledAdapters(codec));
     summary.textContent = `采集完成：${results.filter(item => item.status === 'captured').length} 项更新，${results.filter(item => item.status === 'deferred').length} 项等待初始化，${results.filter(item => item.status === 'failed').length} 项失败。`;
     await refreshStatus();
   });

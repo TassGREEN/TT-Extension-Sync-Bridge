@@ -349,7 +349,7 @@ function mergeFullTrees(targetTrees, sourceTrees) {
   }
 
   for (const sourceFolder of sourceTrees.filter(entry => entry?.type === 'folder')) {
-    let folderMatches = sameNameMatches(output, 'folder', sourceFolder.name);
+    const folderMatches = sameNameMatches(output, 'folder', sourceFolder.name);
     let targetFolderIndex = folderMatches.length === 1 ? folderMatches[0].index : null;
     if (targetFolderIndex !== null) {
       output[targetFolderIndex] = mergeFolderMetadata(output[targetFolderIndex], sourceFolder);
@@ -429,6 +429,61 @@ function coverageMatch(previous, next) {
   return previous.name === next.name && previous.folderName === next.folderName;
 }
 
+function captureLegacyGuardedSet(trees, pluginVersion) {
+  const locations = collectLocations(trees);
+  const matched = new Set();
+  const records = [];
+  const missingScriptIds = [];
+
+  for (const target of TARGET_TAVERN_SCRIPTS) {
+    const resolution = resolveTargetLocation(locations, target);
+    if (resolution?.ambiguous) {
+      throw new Error(`Multiple Tavern Helper scripts match guarded target ${target.name}; resolve duplicate names before capture`);
+    }
+    const found = resolution?.location;
+    if (!found) {
+      missingScriptIds.push(target.id);
+      continue;
+    }
+    matched.add(found);
+    if (hasLikelyEmbeddedCredential(found.record.content)) {
+      return {
+        available: true,
+        status: 'deferred',
+        reason: 'sensitive-script-content-requires-encryption',
+        sourceVersion: pluginVersion,
+        payload: null,
+        diagnostics: { missingScriptIds, embeddedCredentialScriptCount: 1 },
+      };
+    }
+    const redacted = redactClone(found.record, { sensitiveKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS });
+    const path = clone(found.path);
+    delete path.folderName;
+    records.push({ targetKey: target.key, record: redacted.value, path });
+  }
+
+  if (locations.some(location => !matched.has(location))) return null;
+  if (missingScriptIds.length > 0) {
+    return {
+      available: true,
+      status: 'deferred',
+      reason: 'target-scripts-not-fully-initialized',
+      sourceVersion: pluginVersion,
+      payload: null,
+      diagnostics: { missingScriptIds },
+    };
+  }
+
+  const payload = { dataVersion: 1, pluginVersion, records };
+  normalizeLegacyPayload(payload);
+  return {
+    available: true,
+    sourceVersion: pluginVersion,
+    payload,
+    diagnostics: { missingScriptIds: [], globalScriptCount: locations.length, legacyGuardedMode: true },
+  };
+}
+
 export const tavernHelperScriptsAdapter = {
   id: 'tavern-helper-global-scripts',
   label: '酒馆助手全局脚本',
@@ -488,8 +543,10 @@ export const tavernHelperScriptsAdapter = {
     }
     for (const entry of source.trees) validateTreeEntry(entry, 'source');
     validateLogicalUniqueness(source.trees, 'Tavern Helper source');
-    const embeddedCredentialScripts = scriptsWithEmbeddedCredentials(source.trees);
+
     if (!includeSensitive) {
+      const legacy = captureLegacyGuardedSet(source.trees, pluginVersion);
+      if (legacy !== null) return legacy;
       return {
         available: true,
         status: 'deferred',
@@ -498,11 +555,13 @@ export const tavernHelperScriptsAdapter = {
         payload: null,
         diagnostics: {
           globalScriptCount: scriptCount(source.trees),
-          embeddedCredentialScriptCount: embeddedCredentialScripts.length,
+          embeddedCredentialScriptCount: scriptsWithEmbeddedCredentials(source.trees).length,
         },
       };
     }
+
     if (!sensitiveCodec?.encrypt) throw new Error('An encryption passphrase is required for Tavern Helper full script sync');
+    const embeddedCredentialScripts = scriptsWithEmbeddedCredentials(source.trees);
     const payload = {
       dataVersion: 2,
       pluginVersion,

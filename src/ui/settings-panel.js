@@ -79,7 +79,7 @@ export function mountBridgeSettingsPanel(runtime) {
         <label class="checkbox_label"><input data-setting="masterEnabled" type="checkbox"> 总开关</label>
         <label class="checkbox_label"><input data-setting="autoCapture" type="checkbox"> 扩展设置加载完成后自动采集</label>
         <div class="ttsb-sensitive-box">
-          <label class="checkbox_label"><input data-setting="sensitiveDataSync" type="checkbox"> 加密同步敏感配置（API 管理器 / 梦境创客 / st-chatu8）</label>
+          <label class="checkbox_label"><input data-setting="sensitiveDataSync" type="checkbox"> 加密同步敏感配置（酒馆助手脚本 / API 管理器 / 梦境创客 / st-chatu8）</label>
           <input data-setting="sensitivePassphrase" type="password" autocomplete="off" minlength="8" placeholder="同步口令（至少 8 位）" disabled>
           <small>口令只保存在本机，不进入 TT 同步快照；另一台设备首次使用时输入同一口令。</small>
           <button type="button" class="menu_button" data-action="forget-passphrase">忘记本机口令</button>
@@ -166,10 +166,13 @@ export function mountBridgeSettingsPanel(runtime) {
     return codec;
   }
 
-  async function captureEnabledAdapters(codec) {
+  async function captureEnabledAdapters(codec, { allowRegression = false } = {}) {
     const output = [];
     for (const adapterId of enabledAdapterIds()) {
-      output.push(...await runtime.controller.captureAll([adapterId], { sensitiveCodec: codec }));
+      output.push(...await runtime.controller.captureAll([adapterId], {
+        sensitiveCodec: codec,
+        allowRegression,
+      }));
     }
     return output;
   }
@@ -317,7 +320,9 @@ export function mountBridgeSettingsPanel(runtime) {
       summary.textContent = error instanceof Error ? error.message : String(error);
       return;
     }
-    const results = await busy('正在采集并写入 Extension Store…', () => captureEnabledAdapters(codec));
+    const results = await busy('正在采集并写入 Extension Store…', () => (
+      captureEnabledAdapters(codec, { allowRegression: true })
+    ));
     summary.textContent = `采集完成：${results.filter(item => item.status === 'captured').length} 项更新，${results.filter(item => item.status === 'deferred').length} 项等待初始化，${results.filter(item => item.status === 'failed').length} 项失败。`;
     await refreshStatus();
   });

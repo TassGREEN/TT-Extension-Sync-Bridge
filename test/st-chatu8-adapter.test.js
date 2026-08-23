@@ -32,7 +32,10 @@ function settings(overrides = {}) {
     st_chatu8_sd_auth: 'source-auth',
     comfyuiUrl: 'https://source.comfy.private',
     workerid: 'device-worker',
-    workers: { one: { status: 'busy' } },
+    worker: '{"workflow":"portable-active"}',
+    editWorkerid: 'edit-worker',
+    editWorker: '{"workflow":"portable-edit"}',
+    workers: { one: '{"workflow":"portable-preset"}' },
     logState: { sessions: ['runtime'] },
     imageGenStats: { count: 99 },
     chatu8_fab_position: { x: 10, y: 20 },
@@ -50,9 +53,10 @@ function hostFor(version, value = settings()) {
   });
 }
 
-test('st-chatu8 captures user configuration and documents excluded IndexedDB stores', async () => {
+test('st-chatu8 public capture keeps safe config but redacts credentials, workflow bodies, and device state', async () => {
   const result = await stChatu8Adapter.capture(hostFor('2.8.1'));
   const captured = result.payload.settings;
+  const serialized = JSON.stringify(result.payload);
 
   assert.equal(result.sourceVersion, '2.8.1');
   assert.equal(captured.mode, 'novelai');
@@ -66,7 +70,10 @@ test('st-chatu8 captures user configuration and documents excluded IndexedDB sto
   assert.equal(isRedacted(captured.novelaiApi), true);
   assert.equal(isRedacted(captured.novelaisite), true);
   assert.equal(isRedacted(captured.comfyuiUrl), true);
-  assert.equal(isRedacted(captured.workerid), true);
+  assert.equal(captured.workerid, 'device-worker');
+  assert.equal(isRedacted(captured.worker), true);
+  assert.equal(isRedacted(captured.editWorker), true);
+  assert.equal(isRedacted(captured.workers), true);
   assert.equal(isRedacted(captured.logState), true);
   assert.equal(isRedacted(captured.chatu8_fab_position), true);
   assert.deepEqual(result.payload.indexedDb[0].stores[0], {
@@ -78,11 +85,12 @@ test('st-chatu8 captures user configuration and documents excluded IndexedDB sto
   });
   assert.equal(result.payload.indexedDb[0].stores.find(item => item.name === 'tupianhuancun').included, false);
   assert.equal(result.payload.indexedDb[1].included, false);
-  assert.equal(JSON.stringify(result.payload).includes('source-secret'), false);
-  assert.equal(JSON.stringify(result.payload).includes('source.private'), false);
+  assert.equal(serialized.includes('source-secret'), false);
+  assert.equal(serialized.includes('source.private'), false);
+  assert.equal(serialized.includes('portable-preset'), false);
 });
 
-test('st-chatu8 restore preserves target secrets and device state and is idempotent', async () => {
+test('st-chatu8 public restore preserves local secrets, workflow bodies, and device state', async () => {
   const captured = await stChatu8Adapter.capture(hostFor('2.8.1'));
   const target = hostFor('2.8.7', settings({
     mode: 'old-mode',
@@ -98,6 +106,9 @@ test('st-chatu8 restore preserves target secrets and device state and is idempot
     ai_token: 'target-token',
     comfyuiUrl: 'https://target.comfy.private',
     workerid: 'target-worker',
+    worker: '{"workflow":"target-active"}',
+    editWorker: '{"workflow":"target-edit"}',
+    workers: { local: '{"workflow":"target-preset"}' },
     logState: { sessions: ['target-runtime'] },
     chatu8_fab_position: { x: 90, y: 80 },
   }));
@@ -112,7 +123,10 @@ test('st-chatu8 restore preserves target secrets and device state and is idempot
   assert.equal(restored.llm_profiles.profile1.model, 'model-a');
   assert.equal(restored.llm_profiles.profile1.api_key, 'target-secret');
   assert.equal(restored.llm_profiles.profile1.baseUrl, 'https://target.private/v1');
-  assert.equal(restored.workerid, 'target-worker');
+  assert.equal(restored.workerid, 'device-worker');
+  assert.equal(restored.worker, '{"workflow":"target-active"}');
+  assert.equal(restored.editWorker, '{"workflow":"target-edit"}');
+  assert.deepEqual(restored.workers, { local: '{"workflow":"target-preset"}' });
   assert.deepEqual(restored.logState, { sessions: ['target-runtime'] });
   assert.deepEqual(restored.chatu8_fab_position, { x: 90, y: 80 });
   assert.equal(target.inspect().saveCount, 1);
@@ -129,7 +143,7 @@ test('st-chatu8 refuses versions outside the audited 2.8 line', async () => {
   assert.equal(target.inspect().saveCount, 0);
 });
 
-test('st-chatu8 initializes settings on a clean device when version is supported', async () => {
+test('st-chatu8 initializes safe public settings on a clean device when version is supported', async () => {
   const captured = await stChatu8Adapter.capture(hostFor('2.8.1'));
   const target = createMemoryHost({
     pluginVersions: { 'third-party/st-chatu8': '2.8.1' },
@@ -138,8 +152,10 @@ test('st-chatu8 initializes settings on a clean device when version is supported
 
   assert.equal((await stChatu8Adapter.preview(target, captured.payload)).status, 'empty-target');
   assert.equal((await stChatu8Adapter.restore(target, captured.payload)).status, 'applied');
-  assert.equal(target.inspect().extensionSettings[ST_CHATU8_SETTINGS_KEY].mode, 'novelai');
-  assert.equal(Object.hasOwn(target.inspect().extensionSettings[ST_CHATU8_SETTINGS_KEY], 'ai_token'), false);
+  const restored = target.inspect().extensionSettings[ST_CHATU8_SETTINGS_KEY];
+  assert.equal(restored.mode, 'novelai');
+  assert.equal(Object.hasOwn(restored, 'ai_token'), false);
+  assert.equal(Object.hasOwn(restored, 'workers'), false);
 });
 
 test('st-chatu8 captures only user-created manual tags from IndexedDB', async () => {

@@ -1,7 +1,9 @@
 name: Temporary Bridge Tests
 
 on:
-  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
 
 jobs:
   test:

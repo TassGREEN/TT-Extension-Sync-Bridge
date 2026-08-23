@@ -1,9 +1,7 @@
 name: Temporary Bridge Tests
 
 on:
-  push:
-    branches:
-      - fix/full-portable-sync
+  workflow_dispatch:
 
 jobs:
   test:

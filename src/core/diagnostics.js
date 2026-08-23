@@ -16,6 +16,16 @@ function stringArray(value) {
   return Array.isArray(value) ? value.filter(item => typeof item === 'string').map(redactText) : [];
 }
 
+function sanitizeObjectFields(value) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 20).flatMap(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const name = typeof item.name === 'string' ? redactText(item.name).slice(0, 80) : null;
+    const type = typeof item.type === 'string' ? item.type.slice(0, 24) : null;
+    return name === null || type === null ? [] : [{ name, type }];
+  });
+}
+
 function sanitizeProbe(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const tree = value.tree && typeof value.tree === 'object' && !Array.isArray(value.tree)
@@ -38,6 +48,13 @@ function sanitizeProbe(value) {
     tree,
     foundTargetIds: stringArray(value.foundTargetIds),
     missingTargetIds: stringArray(value.missingTargetIds),
+    sourceVersion: typeof value.sourceVersion === 'string' ? redactText(value.sourceVersion) : null,
+    configStorageShape: typeof value.configStorageShape === 'string' ? redactText(value.configStorageShape) : null,
+    configStorageReadable: value.configStorageReadable === true,
+    configCount: Number.isInteger(value.configCount) ? value.configCount : null,
+    embeddedCategories: value.embeddedCategories === true,
+    configStorageCandidatePath: stringArray(value.configStorageCandidatePath),
+    configStorageObjectFields: sanitizeObjectFields(value.configStorageObjectFields),
   };
 }
 

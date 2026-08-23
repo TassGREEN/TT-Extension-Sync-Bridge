@@ -24,7 +24,7 @@ const adapters = [
   dreamCardAgentAdapter,
   stChatu8Adapter,
 ];
-const BRIDGE_VERSION = '0.2.10';
+const BRIDGE_VERSION = '0.2.11';
 const TAVERN_HELPER_RECONCILE_DELAYS = [1500, 4000, 9000];
 const TAVERN_HELPER_OBSERVER_INTERVAL_MS = 2000;
 const TAVERN_HELPER_OBSERVER_DURATION_MS = 120000;

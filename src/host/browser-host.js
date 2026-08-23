@@ -11,6 +11,35 @@ function flattenScripts(trees) {
   });
 }
 
+function requireUserFileUrl(url) {
+  if (typeof url !== 'string' || !url.startsWith('/user/files/')) {
+    throw new TypeError('Only /user/files/ paths may be accessed by the bridge file host');
+  }
+  return url;
+}
+
+function requireUserFileName(name) {
+  if (
+    typeof name !== 'string'
+    || name.trim() === ''
+    || name === '.'
+    || name === '..'
+    || /[\\/]/u.test(name)
+  ) {
+    throw new TypeError('Bridge file uploads require a safe basename');
+  }
+  return name;
+}
+
+function bytesToBase64(bytes) {
+  const value = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let binary = '';
+  for (let offset = 0; offset < value.length; offset += 0x8000) {
+    binary += String.fromCharCode(...value.subarray(offset, offset + 0x8000));
+  }
+  return btoa(binary);
+}
+
 export function createBrowserHost({
   extensionSettings,
   localStorage,
@@ -24,6 +53,7 @@ export function createBrowserHost({
   documentImpl = globalThis.document,
   CustomEventImpl = globalThis.CustomEvent,
   runtimeGlobal = globalThis,
+  fetchImpl = globalThis.fetch,
 }) {
   const persistSettingsSoon = () => {
     if (typeof saveSettingsImmediate === 'function') {
@@ -36,6 +66,12 @@ export function createBrowserHost({
       return;
     }
     saveSettingsDebounced();
+  };
+
+  const requestHeaders = () => {
+    const getRequestHeaders = runtimeGlobal?.SillyTavern?.getRequestHeaders;
+    if (typeof getRequestHeaders === 'function') return getRequestHeaders();
+    return { 'Content-Type': 'application/json' };
   };
 
   const tavernHelperScripts = {
@@ -77,6 +113,36 @@ export function createBrowserHost({
       },
       set(key, value) {
         localStorage.setItem(key, String(value));
+      },
+    },
+    files: {
+      async download(url) {
+        const response = await fetchImpl(requireUserFileUrl(url), { cache: 'no-cache' });
+        if (!response.ok) throw new Error(`Bridge user file read failed: ${response.status}`);
+        return new Uint8Array(await response.arrayBuffer());
+      },
+      async upload(name, bytes) {
+        const response = await fetchImpl('/api/files/upload', {
+          body: JSON.stringify({ data: bytesToBase64(bytes), name: requireUserFileName(name) }),
+          headers: requestHeaders(),
+          method: 'POST',
+        });
+        if (!response.ok) throw new Error(`Bridge user file upload failed: ${response.status}`);
+        const result = await response.json();
+        if (typeof result?.path !== 'string' || !result.path.startsWith('/user/files/')) {
+          throw new Error('Bridge user file upload response is invalid');
+        }
+        return result.path;
+      },
+      async delete(url) {
+        const response = await fetchImpl('/api/files/delete', {
+          body: JSON.stringify({ path: requireUserFileUrl(url) }),
+          headers: requestHeaders(),
+          method: 'POST',
+        });
+        if (!response.ok && response.status !== 404) {
+          throw new Error(`Bridge user file delete failed: ${response.status}`);
+        }
       },
     },
     indexedDb: createIndexedDbHost({ indexedDB, IDBKeyRange }),

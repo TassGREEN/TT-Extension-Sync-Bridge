@@ -8,7 +8,7 @@ import {
 } from '../src/adapters/tavern-helper-scripts-adapter.js';
 import { createMemoryHost } from './helpers/memory-host.js';
 
-const [DATABASE_SCRIPT, API_SCRIPT, DREAM_SCRIPT] = TARGET_TAVERN_SCRIPTS;
+const [DATABASE_SCRIPT] = TARGET_TAVERN_SCRIPTS;
 
 function script(id, name, content) {
   return {
@@ -36,26 +36,24 @@ function hostWithScripts(scripts) {
 }
 
 test('legacy partial Tavern Helper payload cannot masquerade as a complete no-op snapshot', async () => {
-  const source = hostWithScripts([
-    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
-    script(API_SCRIPT.id, API_SCRIPT.name, 'source-api'),
-    script(DREAM_SCRIPT.id, DREAM_SCRIPT.name, 'source-dream'),
-  ]);
-  const captured = await tavernHelperScriptsAdapter.capture(source);
-  const partialPayload = {
-    ...captured.payload,
-    records: captured.payload.records.slice(0, 1),
+  const database = script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db');
+  const legacyPartialPayload = {
+    dataVersion: 1,
+    pluginVersion: '4.9.3',
+    records: [{
+      targetKey: DATABASE_SCRIPT.key,
+      record: database,
+      path: { kind: 'root', treeIndex: 0 },
+    }],
   };
-  const mobile = hostWithScripts([
-    script(DATABASE_SCRIPT.id, DATABASE_SCRIPT.name, 'source-db'),
-  ]);
+  const mobile = hostWithScripts([database]);
 
   await assert.rejects(
-    () => tavernHelperScriptsAdapter.preview(mobile, partialPayload),
+    () => tavernHelperScriptsAdapter.preview(mobile, legacyPartialPayload),
     /snapshot is incomplete; recapture on a source device/i,
   );
   await assert.rejects(
-    () => tavernHelperScriptsAdapter.restore(mobile, partialPayload),
+    () => tavernHelperScriptsAdapter.restore(mobile, legacyPartialPayload),
     /snapshot is incomplete; recapture on a source device/i,
   );
 });

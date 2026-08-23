@@ -6,12 +6,28 @@ const PLUGIN_ID = 'third-party/JS-Slash-Runner';
 const SUPPORTED_VERSION = /^4\./;
 
 export const TARGET_TAVERN_SCRIPTS = Object.freeze([
-  Object.freeze({ id: '8e1213cb-732a-444b-8a80-631e1cf614b5', name: '蚀心入魔·数据库' }),
-  Object.freeze({ id: '9dce28ae-a88e-45c6-a211-f5980602de51', name: '💡API管理器2.0.3' }),
-  Object.freeze({ id: '41179c00-7593-4cf5-b32b-4d6bb3a6b0c2', name: '梦境创客（TokenRhythm代理修复）' }),
+  Object.freeze({
+    key: 'database',
+    id: '8e1213cb-732a-444b-8a80-631e1cf614b5',
+    name: '蚀心入魔·数据库',
+    aliases: Object.freeze(['蚀心入魔·数据库']),
+  }),
+  Object.freeze({
+    key: 'api-manager',
+    id: '9dce28ae-a88e-45c6-a211-f5980602de51',
+    name: '💡API管理器2.0.3',
+    aliases: Object.freeze(['💡API管理器2.0.3']),
+  }),
+  Object.freeze({
+    key: 'dream-card-agent',
+    id: '41179c00-7593-4cf5-b32b-4d6bb3a6b0c2',
+    name: '梦境创客（TokenRhythm代理修复）',
+    aliases: Object.freeze(['梦境创客（TokenRhythm代理修复）', '梦境创客']),
+  }),
 ]);
 
 const TARGET_BY_ID = new Map(TARGET_TAVERN_SCRIPTS.map(item => [item.id, item]));
+const TARGET_BY_KEY = new Map(TARGET_TAVERN_SCRIPTS.map(item => [item.key, item]));
 const SENSITIVE_DATA_KEY_PATTERNS = [
   /^api[_-]?key$/i,
   /token/i,
@@ -101,44 +117,75 @@ function hasLikelyEmbeddedCredential(content) {
   return typeof content === 'string' && EMBEDDED_CREDENTIAL_PATTERNS.some(pattern => pattern.test(content));
 }
 
-function validatePayload(payload) {
+function targetNames(target, incomingRecord = null) {
+  return new Set([
+    target.name,
+    ...(target.aliases ?? []),
+    typeof incomingRecord?.name === 'string' ? incomingRecord.name : null,
+  ].filter(Boolean));
+}
+
+function targetFromLegacyRecord(record) {
+  const byId = TARGET_BY_ID.get(record?.id);
+  if (byId) return byId;
+  const matches = TARGET_TAVERN_SCRIPTS.filter(target => targetNames(target).has(record?.name));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function normalizePayload(payload) {
   if (!isPlainObject(payload) || payload.dataVersion !== 1 || !Array.isArray(payload.records)) {
     throw new TypeError('Tavern Helper scripts payload is invalid');
   }
   if (!supported(payload.pluginVersion)) {
     throw new Error(`Unsupported Tavern Helper snapshot version ${String(payload.pluginVersion)}`);
   }
-  const seen = new Set();
-  for (const item of payload.records) {
-    const id = item?.record?.id;
-    if (!TARGET_BY_ID.has(id) || item.record.type !== 'script' || seen.has(id)) {
-      throw new TypeError('Tavern Helper scripts payload contains an invalid or duplicate script');
+
+  const seenKeys = new Set();
+  const seenIds = new Set();
+  const records = payload.records.map(item => {
+    const record = item?.record;
+    const target = TARGET_BY_KEY.get(item?.targetKey) ?? targetFromLegacyRecord(record);
+    if (!target || record?.type !== 'script' || typeof record.id !== 'string' || !record.id || seenKeys.has(target.key) || seenIds.has(record.id)) {
+      throw new TypeError('Tavern Helper scripts payload contains an invalid or duplicate logical target');
     }
-    seen.add(id);
-  }
-  const missingIds = TARGET_TAVERN_SCRIPTS.map(item => item.id).filter(id => !seen.has(id));
-  if (missingIds.length > 0 || seen.size !== TARGET_TAVERN_SCRIPTS.length) {
+    seenKeys.add(target.key);
+    seenIds.add(record.id);
+    return { ...item, targetKey: target.key, target };
+  });
+
+  const missingTargets = TARGET_TAVERN_SCRIPTS.filter(target => !seenKeys.has(target.key));
+  if (missingTargets.length > 0 || seenKeys.size !== TARGET_TAVERN_SCRIPTS.length) {
     throw new TypeError(
-      `Tavern Helper scripts snapshot is incomplete; recapture on a source device with all guarded scripts present (missing ${missingIds.length})`,
+      `Tavern Helper scripts snapshot is incomplete; recapture on a source device with all guarded scripts present (missing ${missingTargets.length})`,
     );
   }
+  return { ...payload, records };
+}
+
+function resolveTargetLocation(locations, target, incomingRecord = null) {
+  const candidateIds = new Set([target.id, incomingRecord?.id].filter(Boolean));
+  const idMatches = locations.filter(location => candidateIds.has(location.record.id));
+  if (idMatches.length === 1) return { location: idMatches[0], matchedBy: 'id' };
+  if (idMatches.length > 1) return { ambiguous: idMatches, matchedBy: 'id' };
+
+  const names = targetNames(target, incomingRecord);
+  const nameMatches = locations.filter(location => names.has(location.record.name));
+  if (nameMatches.length === 1) return { location: nameMatches[0], matchedBy: 'name' };
+  if (nameMatches.length > 1) return { ambiguous: nameMatches, matchedBy: 'name' };
+  return null;
 }
 
 function findConflicts(trees, payload) {
   const locations = collectLocations(trees);
   const conflicts = [];
   for (const incoming of payload.records) {
-    const expected = TARGET_BY_ID.get(incoming.record.id);
-    const names = new Set([incoming.record.name, expected.name]);
-    const conflict = locations.find(location => (
-      location.record.id !== incoming.record.id && names.has(location.record.name)
-    ));
-    if (conflict) {
+    const resolution = resolveTargetLocation(locations, incoming.target, incoming.record);
+    if (resolution?.ambiguous) {
       conflicts.push({
-        scriptId: incoming.record.id,
-        name: incoming.record.name,
-        conflictingId: conflict.record.id,
-        reason: 'same-name-different-id',
+        targetKey: incoming.target.key,
+        name: incoming.target.name,
+        conflictingIds: resolution.ambiguous.map(item => item.record.id),
+        reason: 'ambiguous-logical-target',
       });
     }
   }
@@ -149,7 +196,8 @@ function applyRecords(trees, records) {
   const output = JSON.parse(JSON.stringify(Array.isArray(trees) ? trees : []));
   for (const incoming of records) {
     const locations = collectLocations(output);
-    const existing = locations.find(location => location.record.id === incoming.record.id);
+    const resolution = resolveTargetLocation(locations, incoming.target, incoming.record);
+    const existing = resolution?.location;
     if (!existing) {
       const restored = mergeRedacted(undefined, incoming.record, {
         preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS,
@@ -160,6 +208,7 @@ function applyRecords(trees, records) {
     const restored = mergeRedacted(existing.record, incoming.record, {
       preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS,
     });
+    restored.id = existing.record.id;
     if (existing.path.kind === 'root') {
       output[existing.path.treeIndex] = restored;
     } else {
@@ -170,17 +219,19 @@ function applyRecords(trees, records) {
 }
 
 function canSafelyCompletePartialSet(trees, payload) {
-  const incomingById = new Map(payload.records.map(item => [item.record.id, item.record]));
-  const currentTargets = collectLocations(trees).filter(location => incomingById.has(location.record.id));
-  const currentIds = new Set(currentTargets.map(location => location.record.id));
-  if (currentTargets.length === 0 || currentTargets.length !== currentIds.size || currentTargets.length >= payload.records.length) {
-    return false;
-  }
-  return currentTargets.every(location => {
-    const merged = mergeRedacted(location.record, incomingById.get(location.record.id), {
+  const locations = collectLocations(trees);
+  const current = payload.records
+    .map(incoming => ({ incoming, resolution: resolveTargetLocation(locations, incoming.target, incoming.record) }))
+    .filter(item => item.resolution?.location && !item.resolution?.ambiguous);
+  if (current.length === 0 || current.length >= payload.records.length) return false;
+
+  return current.every(({ incoming, resolution }) => {
+    const existing = resolution.location.record;
+    const merged = mergeRedacted(existing, incoming.record, {
       preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS,
     });
-    return canonicalJson(location.record) === canonicalJson(merged);
+    merged.id = existing.id;
+    return canonicalJson(existing) === canonicalJson(merged);
   });
 }
 
@@ -194,7 +245,17 @@ export const tavernHelperScriptsAdapter = {
     const pluginVersion = host.pluginVersion(PLUGIN_ID);
     const source = readScriptTrees(host, settings);
     const trees = source.available ? source.trees : getTrees(settings);
-    const foundIds = new Set(collectLocations(trees).map(location => location.record.id));
+    const locations = collectLocations(trees);
+    const foundTargetIds = [];
+    const missingTargetIds = [];
+    for (const target of TARGET_TAVERN_SCRIPTS) {
+      const resolution = resolveTargetLocation(locations, target);
+      if (resolution?.location && !resolution?.ambiguous) {
+        foundTargetIds.push(resolution.location.record.id);
+      } else {
+        missingTargetIds.push(target.id);
+      }
+    }
     return {
       pluginVersion,
       pluginVersionSupported: supported(pluginVersion),
@@ -202,8 +263,8 @@ export const tavernHelperScriptsAdapter = {
       settingsPresent: isPlainObject(settings),
       scriptTreePresent: Array.isArray(trees),
       tree: structuralProbe(trees),
-      foundTargetIds: TARGET_TAVERN_SCRIPTS.map(item => item.id).filter(id => foundIds.has(id)),
-      missingTargetIds: TARGET_TAVERN_SCRIPTS.map(item => item.id).filter(id => !foundIds.has(id)),
+      foundTargetIds,
+      missingTargetIds,
     };
   },
 
@@ -227,11 +288,16 @@ export const tavernHelperScriptsAdapter = {
         diagnostics: { missingScriptIds: [] },
       };
     }
+
     const locations = collectLocations(source.trees);
     const records = [];
     const missingScriptIds = [];
     for (const target of TARGET_TAVERN_SCRIPTS) {
-      const found = locations.find(location => location.record.id === target.id);
+      const resolution = resolveTargetLocation(locations, target);
+      if (resolution?.ambiguous) {
+        throw new Error(`Multiple Tavern Helper scripts match guarded target ${target.name}; resolve duplicate names before capture`);
+      }
+      const found = resolution?.location;
       if (!found) {
         missingScriptIds.push(target.id);
         continue;
@@ -243,7 +309,7 @@ export const tavernHelperScriptsAdapter = {
         includeSensitive,
         sensitiveKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS,
       });
-      records.push({ record: redacted.value, path: found.path });
+      records.push({ targetKey: target.key, record: redacted.value, path: found.path });
     }
     if (missingScriptIds.length > 0) {
       return {
@@ -255,8 +321,9 @@ export const tavernHelperScriptsAdapter = {
         diagnostics: { missingScriptIds },
       };
     }
+
     const payload = { dataVersion: 1, pluginVersion, records };
-    validatePayload(payload);
+    normalizePayload(payload);
     return {
       available: true,
       sourceVersion: pluginVersion,
@@ -265,8 +332,8 @@ export const tavernHelperScriptsAdapter = {
     };
   },
 
-  async preview(host, payload) {
-    validatePayload(payload);
+  async preview(host, rawPayload) {
+    const payload = normalizePayload(rawPayload);
     const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
     const targetVersion = host.pluginVersion(PLUGIN_ID);
     if (!isPlainObject(settings) && targetVersion === null) return { status: 'missing-target' };
@@ -287,8 +354,8 @@ export const tavernHelperScriptsAdapter = {
     };
   },
 
-  async restore(host, payload) {
-    validatePayload(payload);
+  async restore(host, rawPayload) {
+    const payload = normalizePayload(rawPayload);
     const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
     const targetVersion = host.pluginVersion(PLUGIN_ID);
     if (!isPlainObject(settings) && targetVersion === null) return { status: 'missing-target' };

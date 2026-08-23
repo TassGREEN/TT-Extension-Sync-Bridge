@@ -232,9 +232,26 @@ test('dream creator keeps TT file references while still redacting provider URLs
   assert.equal(isRedacted(result.payload.settings.providers[0].baseUrl), true);
 });
 
-test('dream creator encrypts provider credentials and restores them only with the passphrase', async () => {
+test('dream creator encrypts complete portable settings and restores them only with the passphrase', async () => {
   const passphrase = 'portable bridge passphrase';
   const sourceSettings = dreamSettings({
+    globalSkills: { portable: { prompt: 'source-skill' } },
+    workspaceFiles: {
+      portable: {
+        fileId: 'portable',
+        bindingId: 'global',
+        logicalPath: 'portable.json',
+        mediaType: 'application/json',
+        name: 'portable.json',
+        referencedSessionIds: [],
+        scope: 'global-persistent',
+        sha256: 'b'.repeat(64),
+        size: 64,
+        createdAt: 1,
+        updatedAt: 1,
+        url: '/user/files/DreamCreator--Portable--private-reference.json',
+      },
+    },
     providers: [{
       id: 'provider-1',
       name: 'Private provider',
@@ -258,8 +275,8 @@ test('dream creator encrypts provider credentials and restores them only with th
   const captured = await dreamCardAgentAdapter.capture(source, { includeSensitive: true, sensitiveCodec: codec });
   const serialized = JSON.stringify(captured.payload);
 
-  assert.equal(captured.payload.dataVersion, 2);
-  assert.equal(captured.payload.encryptedProviders.$ttSyncBridge, 'encrypted-v1');
+  assert.equal(captured.payload.dataVersion, 3);
+  assert.equal(captured.payload.encryptedSettings.$ttSyncBridge, 'encrypted-v1');
   assert.equal(serialized.includes('https://source.private/v1'), false);
   assert.equal(serialized.includes('dream-owned-secret-payload'), false);
   assert.equal(serialized.includes('model-secret'), false);
@@ -272,7 +289,10 @@ test('dream creator encrypts provider credentials and restores them only with th
   assert.equal(target.inspect().saveCount, 0);
 
   assert.equal((await dreamCardAgentAdapter.restore(target, captured.payload, { sensitiveCodec: codec })).status, 'applied');
-  assert.deepEqual(target.inspect().extensionSettings[DREAM_SETTINGS_KEY].providers, sourceSettings.providers);
+  const restored = target.inspect().extensionSettings[DREAM_SETTINGS_KEY];
+  assert.deepEqual(restored.providers, sourceSettings.providers);
+  assert.deepEqual(restored.globalSkills, sourceSettings.globalSkills);
+  assert.deepEqual(restored.workspaceFiles, sourceSettings.workspaceFiles);
 });
 
 test('dream creator fails closed when sensitive capture has no encryption codec', async () => {

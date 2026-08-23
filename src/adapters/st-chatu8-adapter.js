@@ -31,6 +31,11 @@ const DEVICE_ONLY_PATHS = [
   '$.settings.jiuguanStorage',
 ];
 const DEVICE_ONLY_KEYS = new Set(DEVICE_ONLY_PATHS.map(path => path.slice('$.settings.'.length)));
+const ENCRYPTED_ONLY_PATHS = [
+  '$.settings.worker',
+  '$.settings.editWorker',
+  '$.settings.workers',
+];
 
 const SENSITIVE_KEY_PATTERNS = [
   /^api[_-]?key$/i,
@@ -247,7 +252,7 @@ export const stChatu8Adapter = {
       { settings: current },
       {
         sensitiveKeyPatterns: SENSITIVE_KEY_PATTERNS,
-        excludedPaths: DEVICE_ONLY_PATHS,
+        excludedPaths: [...DEVICE_ONLY_PATHS, ...ENCRYPTED_ONLY_PATHS],
       },
     );
     let encryptedSettings;

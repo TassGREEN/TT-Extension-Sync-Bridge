@@ -2,7 +2,7 @@
 
 | Adapter | 来源 | 会同步 | 明确排除 / 本机保留 | 版本策略 |
 | --- | --- | --- | --- | --- |
-| 酒馆助手全局脚本 | 酒馆助手公共 `getScriptTrees` / `replaceScriptTrees` API | 启用加密后同步完整全局脚本树；已知数据库/API 管理器/梦境创客脚本额外支持名称别名匹配 | 非加密模式不发布任意脚本正文；恢复不删除目标设备独有脚本；自动采集异常缩水会等待 | 酒馆助手 4.x 公共 API；接口未就绪时等待；无法唯一匹配的逻辑目标为硬冲突 |
+| 酒馆助手全局脚本 | 酒馆助手公共 `getScriptTrees` / `replaceScriptTrees` API | 启用加密后同步完整全局脚本树；已知数据库/API 管理器/梦境创客脚本额外支持名称别名匹配 | 非加密模式不发布任意脚本正文；恢复不删除目标设备独有脚本；正常采集检测到脚本集合异常缩水会等待 | 酒馆助手 4.x 公共 API；接口未就绪时等待；无法唯一匹配的逻辑目标为硬冲突 |
 | 蚀心入魔·数据库 | `extension_settings.__userscripts.shujuku_v104__userscript_settings_v1` | global meta、默认 profile settings/template、template presets 等用户配置 | `shujuku_v104_windowStates` | adapter payload v1；未知版本拒绝 |
 | API 管理器 | localStorage | 分类/切换等可移植配置；启用加密后同步完整 API config（包括 Key / URL） | collapsed categories、sync metadata、debug modal 等设备/UI 状态 | 兼容已审计的 2.x 存储形态，包括 raw array、wrapper、map、grouped-api-configs；无法唯一识别结构时 fail closed |
 | 梦境创客 | `extension_settings.dream-card-agent` + Global Skill 对应 `/user/files/` | Agent、Preset、Provider 等可移植设置；启用加密后同步 Provider 敏感配置和用户自建 Global Skill 的 `SKILL.md`/资源文件，并在目标设备重建 URL | `characterStores`、`workspaceFiles`、普通 `files`/session/lease blob、`builtinSkillPackages` 缓存、`floatingButtonOffset`、`syncRevision` | 插件数据版本 4；adapter payload v4；显式迁移旧 adapter v1-v3，旧快照不搬源设备文件 URL |

@@ -13,6 +13,7 @@ export const API_MANAGER_KEYS = Object.freeze([
 
 const API_MANAGER_SCRIPT_NAMES = new Set(['💡API管理器2.0.3', 'API管理器2.0.3']);
 const CONFIGS_KEY = 'api_configs_manager';
+const CATEGORIES_KEY = 'api_configs_categories';
 const DEVICE_ONLY_KEYS = new Set(['api_configs_collapsed_categories']);
 const SENSITIVE_CONTEXT = 'api-manager-2/configs/v1';
 const SENSITIVE_KEY_PATTERNS = [
@@ -44,6 +45,105 @@ function parseManagedJson(key, raw) {
     return JSON.parse(raw);
   } catch {
     throw new TypeError(`${key} must contain valid JSON`);
+  }
+}
+
+function looksLikeApiConfig(value) {
+  if (!isPlainObject(value)) return false;
+  return (
+    typeof value.name === 'string'
+    && typeof value.source === 'string'
+    && (
+      typeof value.customUrl === 'string'
+      || typeof value.customModel === 'string'
+      || Array.isArray(value.apiKeys)
+      || typeof value.apiKey === 'string'
+    )
+  );
+}
+
+function normalizeConfigStorageValue(value, nestedDepth = 0) {
+  if (Array.isArray(value)) {
+    return {
+      configs: value,
+      embeddedCategories: undefined,
+      shape: nestedDepth > 0 ? 'nested-json-array' : 'array',
+    };
+  }
+
+  if (typeof value === 'string' && nestedDepth < 2) {
+    let nested;
+    try {
+      nested = JSON.parse(value);
+    } catch {
+      return { configs: null, embeddedCategories: undefined, shape: 'json-string' };
+    }
+    return normalizeConfigStorageValue(nested, nestedDepth + 1);
+  }
+
+  if (isPlainObject(value)) {
+    if (Array.isArray(value.configs)) {
+      return {
+        configs: value.configs,
+        embeddedCategories: Array.isArray(value.categories) ? value.categories : undefined,
+        shape: 'wrapper-configs',
+      };
+    }
+
+    if (looksLikeApiConfig(value)) {
+      return { configs: [value], embeddedCategories: undefined, shape: 'single-config-object' };
+    }
+
+    const keys = Object.keys(value);
+    if (
+      keys.length > 0
+      && keys.every(key => /^\d+$/u.test(key))
+      && keys.every(key => looksLikeApiConfig(value[key]))
+    ) {
+      return {
+        configs: [...keys]
+          .sort((left, right) => Number(left) - Number(right))
+          .map(key => value[key]),
+        embeddedCategories: undefined,
+        shape: 'numeric-config-map',
+      };
+    }
+
+    if (value.$ttSyncBridge === 'redacted-v1') {
+      return { configs: null, embeddedCategories: undefined, shape: 'bridge-redacted-marker' };
+    }
+    return { configs: null, embeddedCategories: undefined, shape: 'object' };
+  }
+
+  if (value === null) return { configs: null, embeddedCategories: undefined, shape: 'null' };
+  return { configs: null, embeddedCategories: undefined, shape: typeof value };
+}
+
+function parseConfigStorage(raw) {
+  const parsed = parseManagedJson(CONFIGS_KEY, raw);
+  const normalized = normalizeConfigStorageValue(parsed);
+  if (!Array.isArray(normalized.configs)) {
+    throw new TypeError(`${CONFIGS_KEY} has unsupported storage shape: ${normalized.shape}`);
+  }
+  return normalized;
+}
+
+function inspectConfigStorage(host) {
+  const raw = host.localStorage.get(CONFIGS_KEY);
+  if (raw === null) {
+    return { shape: 'missing', readable: true, configCount: 0, embeddedCategories: false };
+  }
+  try {
+    const parsed = parseManagedJson(CONFIGS_KEY, raw);
+    const normalized = normalizeConfigStorageValue(parsed);
+    return {
+      shape: normalized.shape,
+      readable: Array.isArray(normalized.configs),
+      configCount: Array.isArray(normalized.configs) ? normalized.configs.length : null,
+      embeddedCategories: Array.isArray(normalized.embeddedCategories),
+    };
+  } catch {
+    return { shape: 'invalid-json', readable: false, configCount: null, embeddedCategories: false };
   }
 }
 
@@ -92,11 +192,30 @@ function validatePayload(payload) {
 
 function parseCurrentEntries(host) {
   const entries = {};
+  let configStorageShape = 'missing';
+  let embeddedCategories;
+
   for (const key of API_MANAGER_KEYS) {
     const raw = host.localStorage.get(key);
-    entries[key] = raw === null ? undefined : parseManagedJson(key, raw);
+    if (raw === null) {
+      entries[key] = undefined;
+      continue;
+    }
+    if (key === CONFIGS_KEY) {
+      const normalized = parseConfigStorage(raw);
+      entries[key] = normalized.configs;
+      configStorageShape = normalized.shape;
+      embeddedCategories = normalized.embeddedCategories;
+      continue;
+    }
+    entries[key] = parseManagedJson(key, raw);
   }
-  return entries;
+
+  if (entries[CATEGORIES_KEY] === undefined && Array.isArray(embeddedCategories)) {
+    entries[CATEGORIES_KEY] = embeddedCategories;
+  }
+
+  return { entries, configStorageShape };
 }
 
 async function unlockedEntries(payload, sensitiveCodec) {
@@ -131,6 +250,10 @@ function entriesEqual(left, right) {
   });
 }
 
+function configStorageNeedsCanonicalization(shape) {
+  return !['array', 'missing'].includes(shape);
+}
+
 export const apiManagerAdapter = {
   id: 'api-manager-2',
   label: '💡API管理器2.0.3',
@@ -154,6 +277,17 @@ export const apiManagerAdapter = {
     return migrated;
   },
 
+  diagnose(host) {
+    const storage = inspectConfigStorage(host);
+    return {
+      sourceVersion: '2.0.3',
+      configStorageShape: storage.shape,
+      configStorageReadable: storage.readable,
+      configCount: storage.configCount,
+      embeddedCategories: storage.embeddedCategories,
+    };
+  },
+
   async capture(host, { includeSensitive = false, sensitiveCodec } = {}) {
     if (!targetAvailable(host)) {
       return { available: false, sourceVersion: '2.0.3', payload: null, diagnostics: { excludedPaths: [] } };
@@ -165,6 +299,8 @@ export const apiManagerAdapter = {
     const entries = {};
     const excludedPaths = [];
     let configs;
+    let embeddedCategories;
+    let configStorageShape = 'missing';
     for (const key of API_MANAGER_KEYS) {
       const path = `$.entries.${key}`;
       const raw = host.localStorage.get(key);
@@ -173,17 +309,23 @@ export const apiManagerAdapter = {
         excludedPaths.push(path);
         continue;
       }
-      const parsed = parseManagedJson(key, raw);
       if (key === CONFIGS_KEY) {
-        if (!Array.isArray(parsed)) throw new TypeError(`${CONFIGS_KEY} must contain a JSON array`);
-        configs = parsed;
+        const normalized = parseConfigStorage(raw);
+        configs = normalized.configs;
+        embeddedCategories = normalized.embeddedCategories;
+        configStorageShape = normalized.shape;
         entries[key] = redactedValue();
         excludedPaths.push(path);
         continue;
       }
+      const parsed = parseManagedJson(key, raw);
       const redacted = redactClone(parsed, { sensitiveKeyPatterns: SENSITIVE_KEY_PATTERNS });
       entries[key] = redacted.value;
       excludedPaths.push(...redacted.redactions.map(item => `${path}${item.path.slice(1)}`));
+    }
+
+    if (isRedacted(entries[CATEGORIES_KEY]) && Array.isArray(embeddedCategories)) {
+      entries[CATEGORIES_KEY] = clone(embeddedCategories);
     }
 
     const payload = {
@@ -198,7 +340,7 @@ export const apiManagerAdapter = {
       available: true,
       sourceVersion: '2.0.3',
       payload,
-      diagnostics: { excludedPaths },
+      diagnostics: { excludedPaths, configStorageShape },
     };
   },
 
@@ -209,8 +351,11 @@ export const apiManagerAdapter = {
     if (!targetAvailable(host)) return { status: 'missing-target' };
     if (!hasAnyStoredValue(host)) return { status: 'empty-target' };
     const current = parseCurrentEntries(host);
-    const restored = buildRestoredEntries(current, incomingEntries);
-    return { status: entriesEqual(current, restored) ? 'noop' : 'would-change' };
+    const restored = buildRestoredEntries(current.entries, incomingEntries);
+    const equal = entriesEqual(current.entries, restored);
+    return {
+      status: equal && !configStorageNeedsCanonicalization(current.configStorageShape) ? 'noop' : 'would-change',
+    };
   },
 
   async restore(host, payload, { sensitiveCodec } = {}) {
@@ -219,11 +364,14 @@ export const apiManagerAdapter = {
     if (incomingEntries === null) return { status: 'locked', reason: 'passphrase-required' };
     if (!targetAvailable(host)) return { status: 'missing-target' };
     const current = parseCurrentEntries(host);
-    const restored = buildRestoredEntries(current, incomingEntries);
-    if (entriesEqual(current, restored)) return { status: 'noop' };
+    const restored = buildRestoredEntries(current.entries, incomingEntries);
+    const needsCanonicalization = configStorageNeedsCanonicalization(current.configStorageShape);
+    if (entriesEqual(current.entries, restored) && !needsCanonicalization) return { status: 'noop' };
     for (const key of API_MANAGER_KEYS) {
       if (restored[key] === undefined) continue;
-      if (current[key] !== undefined && canonicalJson(current[key]) === canonicalJson(restored[key])) continue;
+      const sameValue = current.entries[key] !== undefined
+        && canonicalJson(current.entries[key]) === canonicalJson(restored[key]);
+      if (sameValue && !(key === CONFIGS_KEY && needsCanonicalization)) continue;
       host.localStorage.set(key, JSON.stringify(restored[key]));
     }
     return { status: 'applied' };

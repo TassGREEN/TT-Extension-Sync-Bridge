@@ -148,6 +148,9 @@ export class BridgeController {
     if (['missing-target', 'incompatible', 'deferred', 'locked'].includes(adapterPreview.status)) {
       return { ...adapterPreview, adapterId, snapshot, adapterPayload };
     }
+    if (adapterPreview.status === 'noop') {
+      return { status: 'noop', adapterId, snapshot, adapterPayload };
+    }
     if (adapterPreview.status === 'empty-target') {
       return { status: 'would-change', adapterId, snapshot, adapterPayload, emptyTarget: true };
     }
@@ -168,7 +171,7 @@ export class BridgeController {
       };
     }
     const currentHash = await sha256Json(stripRedacted(current.payload));
-    if (currentHash === snapshot.nonSensitiveHash || adapterPreview.status === 'noop') {
+    if (currentHash === snapshot.nonSensitiveHash) {
       return { status: 'noop', adapterId, snapshot, adapterPayload, currentHash };
     }
 

@@ -39,14 +39,38 @@ function collectLocations(trees) {
   const locations = [];
   if (!Array.isArray(trees)) return locations;
   trees.forEach((tree, treeIndex) => {
-    if (tree?.type === 'script') locations.push({ record: tree, path: { kind: 'root', treeIndex } });
-    else if (tree?.type === 'folder' && Array.isArray(tree.scripts)) {
+    if (tree?.type === 'script') {
+      locations.push({ record: tree, path: { kind: 'root', treeIndex } });
+      return;
+    }
+    if (tree?.type === 'folder' && Array.isArray(tree.scripts)) {
       tree.scripts.forEach((record, scriptIndex) => {
-        if (record?.type === 'script') locations.push({ record, path: { kind: 'folder', treeIndex, scriptIndex, folderId: tree.id } });
+        if (record?.type === 'script') {
+          locations.push({ record, path: { kind: 'folder', treeIndex, scriptIndex, folderId: tree.id, folderName: tree.name } });
+        }
       });
     }
   });
   return locations;
+}
+
+function sourceScriptEntries(trees) {
+  const entries = [];
+  if (!Array.isArray(trees)) return entries;
+  trees.forEach((tree, treeIndex) => {
+    if (tree?.type === 'script') {
+      entries.push({ record: tree, path: { kind: 'root', treeIndex } });
+      return;
+    }
+    if (tree?.type === 'folder' && Array.isArray(tree.scripts)) {
+      tree.scripts.forEach((record, scriptIndex) => {
+        if (record?.type === 'script') {
+          entries.push({ record, path: { kind: 'folder', treeIndex, scriptIndex, folderId: tree.id, folderName: tree.name } });
+        }
+      });
+    }
+  });
+  return entries;
 }
 
 function structuralProbe(trees) {
@@ -89,9 +113,13 @@ function validateTreeEntry(entry, where) {
 function duplicateNames(values) {
   const seen = new Set();
   const duplicates = new Set();
-  for (const value of values) { if (seen.has(value)) duplicates.add(value); else seen.add(value); }
+  for (const value of values) {
+    if (seen.has(value)) duplicates.add(value);
+    else seen.add(value);
+  }
   return [...duplicates];
 }
+
 function validateLogicalUniqueness(trees, label) {
   const rootScripts = trees.filter(entry => entry?.type === 'script');
   const folders = trees.filter(entry => entry?.type === 'folder');
@@ -106,23 +134,29 @@ function validateLogicalUniqueness(trees, label) {
 }
 
 function validateFullPayload(payload) {
-  if (!isPlainObject(payload) || payload.dataVersion !== 2 || !Array.isArray(payload.trees)) throw new TypeError('Tavern Helper full scripts payload is invalid');
+  if (!isPlainObject(payload) || payload.dataVersion !== 2 || !Array.isArray(payload.trees)) {
+    throw new TypeError('Tavern Helper full scripts payload is invalid');
+  }
   if (!supported(payload.pluginVersion)) throw new Error(`Unsupported Tavern Helper snapshot version ${String(payload.pluginVersion)}`);
   for (const entry of payload.trees) validateTreeEntry(entry, 'snapshot');
   validateLogicalUniqueness(payload.trees, 'Tavern Helper snapshot');
-  if (payload.encryptedTrees !== undefined && !isEncryptedEnvelope(payload.encryptedTrees)) throw new TypeError('Tavern Helper encrypted script tree payload is invalid');
+  if (!isEncryptedEnvelope(payload.encryptedTrees)) {
+    throw new TypeError('Tavern Helper full script snapshots must contain encrypted trees');
+  }
   return payload;
 }
 
 function targetNames(target, incomingRecord = null) {
   return new Set([target.name, ...(target.aliases ?? []), typeof incomingRecord?.name === 'string' ? incomingRecord.name : null].filter(Boolean));
 }
+
 function targetFromLegacyRecord(record) {
   const byId = TARGET_BY_ID.get(record?.id);
   if (byId) return byId;
   const matches = TARGET_TAVERN_SCRIPTS.filter(target => targetNames(target).has(record?.name));
   return matches.length === 1 ? matches[0] : null;
 }
+
 function normalizeLegacyPayload(payload) {
   if (!isPlainObject(payload) || payload.dataVersion !== 1 || !Array.isArray(payload.records)) throw new TypeError('Tavern Helper scripts payload is invalid');
   if (!supported(payload.pluginVersion)) throw new Error(`Unsupported Tavern Helper snapshot version ${String(payload.pluginVersion)}`);
@@ -134,7 +168,8 @@ function normalizeLegacyPayload(payload) {
     if (!target || record?.type !== 'script' || typeof record.id !== 'string' || !record.id || seenKeys.has(target.key) || seenIds.has(record.id)) {
       throw new TypeError('Tavern Helper scripts payload contains an invalid or duplicate logical target');
     }
-    seenKeys.add(target.key); seenIds.add(record.id);
+    seenKeys.add(target.key);
+    seenIds.add(record.id);
     return { ...item, targetKey: target.key, target };
   });
   const missingTargets = TARGET_TAVERN_SCRIPTS.filter(target => !seenKeys.has(target.key));
@@ -143,7 +178,12 @@ function normalizeLegacyPayload(payload) {
   }
   return { ...payload, records };
 }
-function parsePayload(payload) { return payload?.dataVersion === 2 ? { kind: 'full', payload: validateFullPayload(payload) } : { kind: 'legacy', payload: normalizeLegacyPayload(payload) }; }
+
+function parsePayload(payload) {
+  return payload?.dataVersion === 2
+    ? { kind: 'full', payload: validateFullPayload(payload) }
+    : { kind: 'legacy', payload: normalizeLegacyPayload(payload) };
+}
 
 function resolveTargetLocation(locations, target, incomingRecord = null) {
   const candidateIds = new Set([target.id, incomingRecord?.id].filter(Boolean));
@@ -156,15 +196,24 @@ function resolveTargetLocation(locations, target, incomingRecord = null) {
   if (nameMatches.length > 1) return { ambiguous: nameMatches, matchedBy: 'name' };
   return null;
 }
+
 function legacyConflicts(trees, payload) {
   const locations = collectLocations(trees);
   const conflicts = [];
   for (const incoming of payload.records) {
     const resolution = resolveTargetLocation(locations, incoming.target, incoming.record);
-    if (resolution?.ambiguous) conflicts.push({ targetKey: incoming.target.key, name: incoming.target.name, conflictingIds: resolution.ambiguous.map(item => item.record.id), reason: 'ambiguous-logical-target' });
+    if (resolution?.ambiguous) {
+      conflicts.push({
+        targetKey: incoming.target.key,
+        name: incoming.target.name,
+        conflictingIds: resolution.ambiguous.map(item => item.record.id),
+        reason: 'ambiguous-logical-target',
+      });
+    }
   }
   return conflicts;
 }
+
 function applyLegacyRecords(trees, records) {
   const output = clone(Array.isArray(trees) ? trees : []);
   for (const incoming of records) {
@@ -188,8 +237,8 @@ function redactedTreeForEncrypted(trees) {
   for (const location of collectLocations(redacted)) location.record.content = redactedValue();
   return redacted;
 }
+
 async function unlockedFullTrees(payload, sensitiveCodec) {
-  if (payload.encryptedTrees === undefined) return payload.trees;
   if (!sensitiveCodec?.decrypt) return null;
   const sensitive = await sensitiveCodec.decrypt(payload.encryptedTrees, SENSITIVE_CONTEXT);
   if (!isPlainObject(sensitive) || !Array.isArray(sensitive.trees)) throw new TypeError('Tavern Helper decrypted script tree payload is invalid');
@@ -201,62 +250,204 @@ async function unlockedFullTrees(payload, sensitiveCodec) {
 function sameNameMatches(entries, type, name) {
   return entries.map((entry, index) => ({ entry, index })).filter(item => item.entry?.type === type && item.entry.name === name);
 }
+
+function resolveFullScriptLocation(trees, sourceScript, sourcePath) {
+  const locations = collectLocations(trees);
+  const idMatches = locations.filter(location => location.record.id === sourceScript.id);
+  if (idMatches.length === 1) return { location: idMatches[0], matchedBy: 'id' };
+  if (idMatches.length > 1) return { ambiguous: idMatches, matchedBy: 'id' };
+
+  const guardedTarget = targetFromLegacyRecord(sourceScript);
+  if (guardedTarget) {
+    const guarded = resolveTargetLocation(locations, guardedTarget, sourceScript);
+    if (guarded) return { ...guarded, guardedTarget };
+  }
+
+  if (sourcePath.kind === 'root') {
+    const matches = locations.filter(location => location.path.kind === 'root' && location.record.name === sourceScript.name);
+    if (matches.length === 1) return { location: matches[0], matchedBy: 'root-name' };
+    if (matches.length > 1) return { ambiguous: matches, matchedBy: 'root-name' };
+    return null;
+  }
+
+  const folderMatches = sameNameMatches(trees, 'folder', sourcePath.folderName);
+  if (folderMatches.length > 1) return { ambiguousFolders: folderMatches, matchedBy: 'folder-name' };
+  if (folderMatches.length === 0) return null;
+  const folder = folderMatches[0].entry;
+  const scriptMatches = folder.scripts
+    .map((script, scriptIndex) => ({
+      record: script,
+      path: {
+        kind: 'folder',
+        treeIndex: folderMatches[0].index,
+        scriptIndex,
+        folderId: folder.id,
+        folderName: folder.name,
+      },
+    }))
+    .filter(item => item.record?.type === 'script' && item.record.name === sourceScript.name);
+  if (scriptMatches.length === 1) return { location: scriptMatches[0], matchedBy: 'folder-script-name' };
+  if (scriptMatches.length > 1) return { ambiguous: scriptMatches, matchedBy: 'folder-script-name' };
+  return null;
+}
+
 function fullTreeConflicts(targetTrees, sourceTrees) {
   const conflicts = [];
-  for (const source of sourceTrees) {
-    if (source.type === 'script') {
-      const matches = sameNameMatches(targetTrees, 'script', source.name);
-      if (matches.length > 1) conflicts.push({ reason: 'duplicate-root-script', name: source.name, conflictingIds: matches.map(item => item.entry.id) });
-      continue;
-    }
-    const folderMatches = sameNameMatches(targetTrees, 'folder', source.name);
+  for (const sourceFolder of sourceTrees.filter(entry => entry?.type === 'folder')) {
+    const folderMatches = sameNameMatches(targetTrees, 'folder', sourceFolder.name);
     if (folderMatches.length > 1) {
-      conflicts.push({ reason: 'duplicate-folder', name: source.name, conflictingIds: folderMatches.map(item => item.entry.id) });
-      continue;
+      conflicts.push({ reason: 'duplicate-folder', name: sourceFolder.name, conflictingIds: folderMatches.map(item => item.entry.id) });
     }
-    if (folderMatches.length === 1) {
-      const targetFolder = folderMatches[0].entry;
-      for (const sourceScript of source.scripts) {
-        const scriptMatches = targetFolder.scripts.map((script, index) => ({ script, index })).filter(item => item.script?.type === 'script' && item.script.name === sourceScript.name);
-        if (scriptMatches.length > 1) conflicts.push({ reason: 'duplicate-folder-script', folder: source.name, name: sourceScript.name, conflictingIds: scriptMatches.map(item => item.script.id) });
-      }
+  }
+  for (const source of sourceScriptEntries(sourceTrees)) {
+    const resolution = resolveFullScriptLocation(targetTrees, source.record, source.path);
+    if (resolution?.ambiguous) {
+      conflicts.push({
+        reason: resolution.guardedTarget ? 'ambiguous-logical-target' : resolution.matchedBy === 'id' ? 'duplicate-script-id' : source.path.kind === 'root' ? 'duplicate-root-script' : 'duplicate-folder-script',
+        name: source.record.name,
+        ...(source.path.kind === 'folder' ? { folder: source.path.folderName } : {}),
+        conflictingIds: resolution.ambiguous.map(item => item.record.id),
+      });
+    } else if (resolution?.ambiguousFolders) {
+      conflicts.push({
+        reason: 'duplicate-folder',
+        name: source.path.folderName,
+        conflictingIds: resolution.ambiguousFolders.map(item => item.entry.id),
+      });
     }
   }
   return conflicts;
 }
+
 function mergeScript(existing, incoming) {
   if (!existing) return clone(incoming);
   const restored = mergeRedacted(existing, incoming, { preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS });
   restored.id = existing.id;
   return restored;
 }
-function mergeFolder(existing, incoming) {
-  if (!existing) return clone(incoming);
+
+function replaceLocation(trees, location, record) {
+  if (location.path.kind === 'root') trees[location.path.treeIndex] = record;
+  else trees[location.path.treeIndex].scripts[location.path.scriptIndex] = record;
+}
+
+function mergeFolderMetadata(existing, incoming) {
+  const scripts = clone(existing.scripts ?? []);
   const restored = mergeRedacted(existing, incoming, { preserveLocalKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS });
   restored.id = existing.id;
-  const scripts = clone(existing.scripts ?? []);
-  for (const sourceScript of incoming.scripts) {
-    const matches = scripts.map((script, index) => ({ script, index })).filter(item => item.script?.type === 'script' && item.script.name === sourceScript.name);
-    if (matches.length === 1) scripts[matches[0].index] = mergeScript(matches[0].script, sourceScript);
-    else if (matches.length === 0) scripts.push(clone(sourceScript));
-  }
   restored.scripts = scripts;
   return restored;
 }
+
 function mergeFullTrees(targetTrees, sourceTrees) {
   const output = clone(Array.isArray(targetTrees) ? targetTrees : []);
-  for (const source of sourceTrees) {
-    const matches = sameNameMatches(output, source.type, source.name);
-    if (matches.length === 1) output[matches[0].index] = source.type === 'script' ? mergeScript(matches[0].entry, source) : mergeFolder(matches[0].entry, source);
-    else if (matches.length === 0) output.push(clone(source));
+
+  for (const source of sourceTrees.filter(entry => entry?.type === 'script')) {
+    const resolution = resolveFullScriptLocation(output, source, { kind: 'root' });
+    if (resolution?.location) replaceLocation(output, resolution.location, mergeScript(resolution.location.record, source));
+    else output.push(clone(source));
+  }
+
+  for (const sourceFolder of sourceTrees.filter(entry => entry?.type === 'folder')) {
+    let folderMatches = sameNameMatches(output, 'folder', sourceFolder.name);
+    let targetFolderIndex = folderMatches.length === 1 ? folderMatches[0].index : null;
+    if (targetFolderIndex !== null) {
+      output[targetFolderIndex] = mergeFolderMetadata(output[targetFolderIndex], sourceFolder);
+    }
+
+    const unmatched = [];
+    for (const sourceScript of sourceFolder.scripts) {
+      const resolution = resolveFullScriptLocation(output, sourceScript, {
+        kind: 'folder',
+        folderName: sourceFolder.name,
+        folderId: sourceFolder.id,
+      });
+      if (resolution?.location) {
+        replaceLocation(output, resolution.location, mergeScript(resolution.location.record, sourceScript));
+      } else if (targetFolderIndex !== null) {
+        output[targetFolderIndex].scripts.push(clone(sourceScript));
+      } else {
+        unmatched.push(clone(sourceScript));
+      }
+    }
+
+    if (targetFolderIndex === null && unmatched.length > 0) {
+      const created = clone(sourceFolder);
+      created.scripts = unmatched;
+      output.push(created);
+      targetFolderIndex = output.length - 1;
+    }
   }
   return output;
+}
+
+function folderMetadata(folder) {
+  const value = clone(folder);
+  delete value.scripts;
+  return value;
+}
+
+function isAdditiveOnly(targetTrees, mergedTrees) {
+  if (canonicalJson(targetTrees) === canonicalJson(mergedTrees)) return false;
+  if (!Array.isArray(targetTrees) || !Array.isArray(mergedTrees) || mergedTrees.length < targetTrees.length) return false;
+  for (let index = 0; index < targetTrees.length; index += 1) {
+    const before = targetTrees[index];
+    const after = mergedTrees[index];
+    if (before?.type !== 'folder') {
+      if (canonicalJson(before) !== canonicalJson(after)) return false;
+      continue;
+    }
+    if (after?.type !== 'folder' || canonicalJson(folderMetadata(before)) !== canonicalJson(folderMetadata(after))) return false;
+    if (!Array.isArray(after.scripts) || after.scripts.length < before.scripts.length) return false;
+    for (let scriptIndex = 0; scriptIndex < before.scripts.length; scriptIndex += 1) {
+      if (canonicalJson(before.scripts[scriptIndex]) !== canonicalJson(after.scripts[scriptIndex])) return false;
+    }
+  }
+  return true;
+}
+
+function coverageEntries(payload) {
+  if (payload?.dataVersion === 1 && Array.isArray(payload.records)) {
+    return payload.records.flatMap(item => item?.record?.type === 'script'
+      ? [{ id: item.record.id, name: item.record.name, folderName: item?.path?.kind === 'folder' ? item.path.folderId ?? null : null, target: targetFromLegacyRecord(item.record) }]
+      : []);
+  }
+  if (payload?.dataVersion === 2 && Array.isArray(payload.trees)) {
+    return sourceScriptEntries(payload.trees).map(item => ({
+      id: item.record.id,
+      name: item.record.name,
+      folderName: item.path.kind === 'folder' ? item.path.folderName : null,
+      target: targetFromLegacyRecord(item.record),
+    }));
+  }
+  return [];
+}
+
+function coverageMatch(previous, next) {
+  if (previous.id && next.id && previous.id === next.id) return true;
+  if (previous.target && next.target && previous.target.key === next.target.key) return true;
+  return previous.name === next.name && previous.folderName === next.folderName;
 }
 
 export const tavernHelperScriptsAdapter = {
   id: 'tavern-helper-global-scripts',
   label: '酒馆助手全局脚本',
   version: 1,
+
+  captureRegression(previousPayload, nextPayload) {
+    const previous = coverageEntries(previousPayload);
+    const next = coverageEntries(nextPayload);
+    const missing = previous.filter(item => !next.some(candidate => coverageMatch(item, candidate)));
+    if (missing.length === 0) return null;
+    return {
+      reason: 'global-script-set-shrank',
+      diagnostics: {
+        previousScriptCount: previous.length,
+        nextScriptCount: next.length,
+        missingScriptCount: missing.length,
+      },
+    };
+  },
 
   async diagnose(host) {
     const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
@@ -287,26 +478,48 @@ export const tavernHelperScriptsAdapter = {
   async capture(host, { includeSensitive = false, sensitiveCodec } = {}) {
     const settings = host.extensionSettings.get(TAVERN_HELPER_SETTINGS_KEY);
     const pluginVersion = host.pluginVersion(PLUGIN_ID);
-    if (!isPlainObject(settings) && pluginVersion === null) return { available: false, sourceVersion: null, payload: null, diagnostics: { missingScriptIds: [] } };
+    if (!isPlainObject(settings) && pluginVersion === null) {
+      return { available: false, sourceVersion: null, payload: null, diagnostics: { missingScriptIds: [] } };
+    }
     if (!supported(pluginVersion)) throw new Error(`Unsupported Tavern Helper version ${String(pluginVersion)}`);
     const source = readScriptTrees(host, settings);
-    if (!source.available) return { available: true, status: 'deferred', reason: 'tavern-helper-script-api-not-ready', sourceVersion: pluginVersion, payload: null, diagnostics: { missingScriptIds: [] } };
+    if (!source.available) {
+      return { available: true, status: 'deferred', reason: 'tavern-helper-script-api-not-ready', sourceVersion: pluginVersion, payload: null, diagnostics: { missingScriptIds: [] } };
+    }
     for (const entry of source.trees) validateTreeEntry(entry, 'source');
     validateLogicalUniqueness(source.trees, 'Tavern Helper source');
     const embeddedCredentialScripts = scriptsWithEmbeddedCredentials(source.trees);
-    if (includeSensitive && !sensitiveCodec?.encrypt) throw new Error('An encryption passphrase is required for Tavern Helper full script sync');
-    if (!includeSensitive && embeddedCredentialScripts.length > 0) {
-      return { available: true, status: 'deferred', reason: 'sensitive-script-content-requires-encryption', sourceVersion: pluginVersion, payload: null, diagnostics: { embeddedCredentialScriptCount: embeddedCredentialScripts.length } };
+    if (!includeSensitive) {
+      return {
+        available: true,
+        status: 'deferred',
+        reason: 'full-script-sync-requires-encryption',
+        sourceVersion: pluginVersion,
+        payload: null,
+        diagnostics: {
+          globalScriptCount: scriptCount(source.trees),
+          embeddedCredentialScriptCount: embeddedCredentialScripts.length,
+        },
+      };
     }
-    const publicTrees = includeSensitive ? redactedTreeForEncrypted(source.trees) : redactClone(source.trees, { sensitiveKeyPatterns: SENSITIVE_DATA_KEY_PATTERNS }).value;
+    if (!sensitiveCodec?.encrypt) throw new Error('An encryption passphrase is required for Tavern Helper full script sync');
     const payload = {
       dataVersion: 2,
       pluginVersion,
-      trees: publicTrees,
-      ...(includeSensitive ? { encryptedTrees: await sensitiveCodec.encrypt({ trees: clone(source.trees) }, SENSITIVE_CONTEXT) } : {}),
+      trees: redactedTreeForEncrypted(source.trees),
+      encryptedTrees: await sensitiveCodec.encrypt({ trees: clone(source.trees) }, SENSITIVE_CONTEXT),
     };
     validateFullPayload(payload);
-    return { available: true, sourceVersion: pluginVersion, payload, diagnostics: { missingScriptIds: [], globalScriptCount: scriptCount(source.trees), embeddedCredentialScriptCount: embeddedCredentialScripts.length } };
+    return {
+      available: true,
+      sourceVersion: pluginVersion,
+      payload,
+      diagnostics: {
+        missingScriptIds: [],
+        globalScriptCount: scriptCount(source.trees),
+        embeddedCredentialScriptCount: embeddedCredentialScripts.length,
+      },
+    };
   },
 
   async preview(host, rawPayload, { sensitiveCodec } = {}) {
@@ -322,13 +535,23 @@ export const tavernHelperScriptsAdapter = {
     if (parsed.kind === 'legacy') {
       const conflicts = legacyConflicts(trees, parsed.payload);
       if (conflicts.length > 0) return { status: 'conflict', conflicts };
-      return { status: canonicalJson(trees) === canonicalJson(applyLegacyRecords(trees, parsed.payload.records)) ? 'noop' : 'would-change' };
+      const restored = applyLegacyRecords(trees, parsed.payload.records);
+      const status = canonicalJson(trees) === canonicalJson(restored) ? 'noop' : 'would-change';
+      return {
+        status,
+        ...(status === 'would-change' && isAdditiveOnly(trees, restored) ? { safeToApply: true } : {}),
+      };
     }
     const incomingTrees = await unlockedFullTrees(parsed.payload, sensitiveCodec);
     if (incomingTrees === null) return { status: 'locked', reason: 'passphrase-required' };
     const conflicts = fullTreeConflicts(trees, incomingTrees);
     if (conflicts.length > 0) return { status: 'conflict', conflicts };
-    return { status: canonicalJson(trees) === canonicalJson(mergeFullTrees(trees, incomingTrees)) ? 'noop' : 'would-change' };
+    const restored = mergeFullTrees(trees, incomingTrees);
+    const status = canonicalJson(trees) === canonicalJson(restored) ? 'noop' : 'would-change';
+    return {
+      status,
+      ...(status === 'would-change' && isAdditiveOnly(trees, restored) ? { safeToApply: true } : {}),
+    };
   },
 
   async restore(host, rawPayload, { sensitiveCodec } = {}) {

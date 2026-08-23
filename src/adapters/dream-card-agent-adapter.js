@@ -1,6 +1,13 @@
 import { canonicalJson } from '../core/canonical-json.js';
-import { isRedacted, mergeRedacted, redactClone, stripRedacted } from '../core/redaction.js';
+import { isRedacted, mergeRedacted, redactClone } from '../core/redaction.js';
 import { isEncryptedEnvelope } from '../core/sensitive-envelope.js';
+import {
+  captureGlobalSkillAssets,
+  globalSkillAssetsHealthy,
+  materializeGlobalSkills,
+  portableGlobalSkills,
+  validateGlobalSkillAssets,
+} from './dream-global-skills.js';
 
 export const DREAM_SETTINGS_KEY = 'dream-card-agent';
 export const DREAM_CACHE_KEY = 'dream-card-agent:settings:v4';
@@ -8,13 +15,26 @@ export const DREAM_SETTINGS_CHANNEL = 'dream-card-agent:settings';
 export const DREAM_SCRIPT_ID = '41179c00-7593-4cf5-b32b-4d6bb3a6b0c2';
 const DREAM_SCRIPT_NAMES = new Set(['梦境创客', '梦境创客（TokenRhythm代理修复）']);
 const SUPPORTED_PLUGIN_DATA_VERSION = 4;
+const PAYLOAD_DATA_VERSION = 4;
 const LEGACY_PROVIDER_CONTEXT = 'dream-card-agent/providers/v1';
 const SENSITIVE_CONTEXT = 'dream-card-agent/settings/v2';
-const DEVICE_ONLY_PATHS = [
+const LOCAL_ONLY_KEYS = new Set([
+  'floatingButtonOffset',
+  'syncRevision',
+  'characterStores',
+  'workspaceFiles',
+  'builtinSkillPackages',
+  'files',
+]);
+const PUBLIC_EXCLUDED_PATHS = [
   '$.settings.floatingButtonOffset',
   '$.settings.syncRevision',
+  '$.settings.characterStores',
+  '$.settings.workspaceFiles',
+  '$.settings.builtinSkillPackages',
+  '$.settings.files',
+  '$.settings.globalSkills',
 ];
-const DEVICE_ONLY_KEYS = new Set(DEVICE_ONLY_PATHS.map(path => path.slice('$.settings.'.length)));
 const SENSITIVE_KEY_PATTERNS = [
   /^api[_-]?key$/i,
   /token/i,
@@ -106,7 +126,7 @@ async function persistDreamSettings(host, settings) {
 }
 
 function validatePayload(payload) {
-  if (!isPlainObject(payload) || payload.dataVersion !== 3 || !isPlainObject(payload.settings)) {
+  if (!isPlainObject(payload) || payload.dataVersion !== PAYLOAD_DATA_VERSION || !isPlainObject(payload.settings)) {
     throw new TypeError('Dream creator payload is invalid');
   }
   if (payload.pluginDataVersion !== SUPPORTED_PLUGIN_DATA_VERSION) {
@@ -135,15 +155,23 @@ function providerSensitivePaths(settings) {
 }
 
 function portableSettings(settings) {
-  const portableRedacted = redactClone(
-    { settings },
-    { excludedPaths: DEVICE_ONLY_PATHS },
-  );
-  const portable = stripRedacted(portableRedacted.value);
-  if (!isPlainObject(portable?.settings)) {
-    throw new TypeError('Unable to build portable Dream creator settings');
-  }
-  return portable.settings;
+  if (!isPlainObject(settings)) throw new TypeError('Unable to build portable Dream creator settings');
+  const portable = clone(settings);
+  for (const key of LOCAL_ONLY_KEYS) delete portable[key];
+  portable.globalSkills = portableGlobalSkills(settings);
+  return portable;
+}
+
+function legacyPortableSettings(settings) {
+  const portable = portableSettings(settings);
+  delete portable.globalSkills;
+  return portable;
+}
+
+function comparisonSettings(settings, { includeGlobalSkills = true } = {}) {
+  const portable = portableSettings(settings);
+  if (!includeGlobalSkills) delete portable.globalSkills;
+  return portable;
 }
 
 function repairLegacyCharacterStoreUrls(settings) {
@@ -194,12 +222,22 @@ function mergeDreamSettings(current, incoming) {
   return restored;
 }
 
-function mergePortableSettings(current, incoming) {
+function mergePortableSettings(current, incoming, { preserveGlobalSkills = false } = {}) {
   const restored = clone(incoming);
   const local = isPlainObject(current) ? current : {};
-  for (const key of DEVICE_ONLY_KEYS) {
-    if (Object.hasOwn(local, key)) restored[key] = clone(local[key]);
-    else delete restored[key];
+
+  restored.characterStores = clone(isPlainObject(local.characterStores) ? local.characterStores : {});
+  restored.workspaceFiles = clone(isPlainObject(local.workspaceFiles) ? local.workspaceFiles : {});
+  restored.builtinSkillPackages = clone(isPlainObject(local.builtinSkillPackages) ? local.builtinSkillPackages : {});
+  restored.files = clone(isPlainObject(local.files) ? local.files : {});
+  if (Object.hasOwn(local, 'floatingButtonOffset')) restored.floatingButtonOffset = clone(local.floatingButtonOffset);
+  else delete restored.floatingButtonOffset;
+  delete restored.syncRevision;
+
+  if (preserveGlobalSkills) {
+    restored.globalSkills = clone(isPlainObject(local.globalSkills) ? local.globalSkills : {});
+  } else if (!isPlainObject(restored.globalSkills)) {
+    restored.globalSkills = {};
   }
   return restored;
 }
@@ -211,7 +249,15 @@ async function unlockedSettings(payload, sensitiveCodec) {
     if (!isPlainObject(sensitive) || !isPlainObject(sensitive.settings)) {
       throw new TypeError('Dream creator decrypted settings payload is invalid');
     }
-    return { settings: sensitive.settings, fullPortable: true };
+    const hasAssets = Object.hasOwn(sensitive, 'globalSkillAssets');
+    const settings = hasAssets ? portableSettings(sensitive.settings) : legacyPortableSettings(sensitive.settings);
+    if (hasAssets) validateGlobalSkillAssets(sensitive.globalSkillAssets, settings);
+    return {
+      settings,
+      fullPortable: true,
+      globalSkillAssets: hasAssets ? sensitive.globalSkillAssets : null,
+      preserveGlobalSkills: !hasAssets,
+    };
   }
   if (payload.encryptedProviders !== undefined) {
     if (!sensitiveCodec?.decrypt) return null;
@@ -219,22 +265,29 @@ async function unlockedSettings(payload, sensitiveCodec) {
     if (!isPlainObject(sensitive) || !Array.isArray(sensitive.providers)) {
       throw new TypeError('Dream creator decrypted provider payload is invalid');
     }
-    return { settings: { ...payload.settings, providers: sensitive.providers }, fullPortable: false };
+    return {
+      settings: { ...payload.settings, providers: sensitive.providers },
+      fullPortable: false,
+      globalSkillAssets: null,
+      preserveGlobalSkills: true,
+    };
   }
-  return { settings: payload.settings, fullPortable: false };
+  return {
+    settings: payload.settings,
+    fullPortable: false,
+    globalSkillAssets: null,
+    preserveGlobalSkills: true,
+  };
 }
 
 export const dreamCardAgentAdapter = {
   id: 'dream-card-agent',
   label: '梦境创客',
-  version: 3,
+  version: 4,
 
   migratePayload(payload, fromVersion) {
-    if (fromVersion === 1 && isPlainObject(payload) && payload.dataVersion === 1) {
-      return { ...payload, dataVersion: 3 };
-    }
-    if (fromVersion === 2 && isPlainObject(payload) && payload.dataVersion === 2) {
-      return { ...payload, dataVersion: 3 };
+    if ([1, 2, 3].includes(fromVersion) && isPlainObject(payload) && [1, 2, 3].includes(payload.dataVersion)) {
+      return { ...payload, dataVersion: PAYLOAD_DATA_VERSION };
     }
     throw new Error(`Unsupported dream creator adapter migration from version ${String(fromVersion)}`);
   },
@@ -247,7 +300,12 @@ export const dreamCardAgentAdapter = {
         available: false,
         sourceVersion: null,
         payload: null,
-        diagnostics: { excludedPaths: [], repairedReferenceCount: 0 },
+        diagnostics: {
+          excludedPaths: [],
+          repairedReferenceCount: 0,
+          globalSkillAssetFiles: 0,
+          globalSkillAssetBytes: 0,
+        },
       };
     }
     if (current.version !== SUPPORTED_PLUGIN_DATA_VERSION) {
@@ -263,21 +321,29 @@ export const dreamCardAgentAdapter = {
     if (includeSensitive && !sensitiveCodec?.encrypt) {
       throw new Error('An encryption passphrase is required for Dream creator sensitive sync');
     }
+
     const redacted = redactClone(
       { settings: current },
       {
         sensitiveKeyPatterns: SENSITIVE_KEY_PATTERNS,
-        excludedPaths: [...DEVICE_ONLY_PATHS, ...providerSensitivePaths(current)],
+        excludedPaths: [...PUBLIC_EXCLUDED_PATHS, ...providerSensitivePaths(current)],
       },
     );
+
+    let globalSkillAssets = null;
+    if (includeSensitive) globalSkillAssets = await captureGlobalSkillAssets(host, current);
+
     const payload = {
-      dataVersion: 3,
+      dataVersion: PAYLOAD_DATA_VERSION,
       pluginDataVersion: current.version,
       settings: redacted.value.settings,
       ...(includeSensitive
         ? {
             encryptedSettings: await sensitiveCodec.encrypt(
-              { settings: portableSettings(current) },
+              {
+                settings: portableSettings(current),
+                globalSkillAssets,
+              },
               SENSITIVE_CONTEXT,
             ),
           }
@@ -291,6 +357,8 @@ export const dreamCardAgentAdapter = {
       diagnostics: {
         excludedPaths: redacted.redactions.map(item => item.path),
         repairedReferenceCount,
+        globalSkillAssetFiles: globalSkillAssets?.fileCount ?? 0,
+        globalSkillAssetBytes: globalSkillAssets?.totalBytes ?? 0,
       },
     };
   },
@@ -310,9 +378,21 @@ export const dreamCardAgentAdapter = {
         message: `Target dream-card-agent version ${String(current.version)} is not supported`,
       };
     }
-    const restored = unlocked.fullPortable
-      ? mergePortableSettings(current, unlocked.settings)
-      : mergeDreamSettings(current, unlocked.settings);
+
+    if (unlocked.fullPortable) {
+      const currentComparable = comparisonSettings(current, {
+        includeGlobalSkills: !unlocked.preserveGlobalSkills,
+      });
+      const contentEqual = canonicalJson(currentComparable) === canonicalJson(unlocked.settings);
+      const assetsHealthy = unlocked.globalSkillAssets === null
+        ? true
+        : await globalSkillAssetsHealthy(host, current, unlocked.settings, unlocked.globalSkillAssets);
+      return {
+        status: contentEqual && assetsHealthy && storesAligned(state, current) ? 'noop' : 'would-change',
+      };
+    }
+
+    const restored = mergeDreamSettings(current, unlocked.settings);
     const contentEqual = canonicalJson(current) === canonicalJson(restored);
     return { status: contentEqual && storesAligned(state, current) ? 'noop' : 'would-change' };
   },
@@ -323,28 +403,60 @@ export const dreamCardAgentAdapter = {
     if (unlocked === null) return { status: 'locked', reason: 'passphrase-required' };
     const state = readDreamState(host);
     const current = state.latest;
-    if (!isPlainObject(current)) {
-      if (!hasDreamScript(host)) return { status: 'missing-target' };
-      const initialized = unlocked.fullPortable
-        ? mergePortableSettings(undefined, unlocked.settings)
-        : mergeDreamSettings(undefined, unlocked.settings);
-      initialized.syncRevision = state.maxRevision + 1;
-      await persistDreamSettings(host, initialized);
-      return { status: 'applied' };
-    }
-    if (current.version !== payload.pluginDataVersion) {
+    if (!isPlainObject(current) && !hasDreamScript(host)) return { status: 'missing-target' };
+    if (isPlainObject(current) && current.version !== payload.pluginDataVersion) {
       return {
         status: 'incompatible',
         message: `Target dream-card-agent version ${String(current.version)} is not supported`,
       };
     }
-    const restored = unlocked.fullPortable
-      ? mergePortableSettings(current, unlocked.settings)
-      : mergeDreamSettings(current, unlocked.settings);
-    const contentChanged = canonicalJson(current) !== canonicalJson(restored);
-    if (!contentChanged && storesAligned(state, current)) return { status: 'noop' };
-    restored.syncRevision = contentChanged ? state.maxRevision + 1 : revisionOf(current);
-    await persistDreamSettings(host, restored);
+
+    if (unlocked.fullPortable) {
+      const currentComparable = isPlainObject(current)
+        ? comparisonSettings(current, { includeGlobalSkills: !unlocked.preserveGlobalSkills })
+        : null;
+      const contentEqual = isPlainObject(current)
+        ? canonicalJson(currentComparable) === canonicalJson(unlocked.settings)
+        : false;
+      const assetsHealthy = unlocked.globalSkillAssets === null || !isPlainObject(current)
+        ? unlocked.globalSkillAssets === null
+        : await globalSkillAssetsHealthy(host, current, unlocked.settings, unlocked.globalSkillAssets);
+      if (isPlainObject(current) && contentEqual && assetsHealthy && storesAligned(state, current)) {
+        return { status: 'noop' };
+      }
+
+      let restored = mergePortableSettings(current, unlocked.settings, {
+        preserveGlobalSkills: unlocked.preserveGlobalSkills,
+      });
+      let uploadedUrls = [];
+      if (unlocked.globalSkillAssets !== null) {
+        const materialized = await materializeGlobalSkills(
+          host,
+          current,
+          restored,
+          unlocked.globalSkillAssets,
+        );
+        restored = materialized.settings;
+        uploadedUrls = materialized.uploadedUrls;
+      }
+      restored.syncRevision = state.maxRevision + 1;
+      try {
+        await persistDreamSettings(host, restored);
+      } catch (error) {
+        if (typeof host.files?.delete === 'function') {
+          for (const url of uploadedUrls) await host.files.delete(url).catch(() => undefined);
+        }
+        throw error;
+      }
+      return { status: 'applied' };
+    }
+
+    const initialized = mergeDreamSettings(current, unlocked.settings);
+    if (isPlainObject(current) && canonicalJson(current) === canonicalJson(initialized) && storesAligned(state, current)) {
+      return { status: 'noop' };
+    }
+    initialized.syncRevision = state.maxRevision + 1;
+    await persistDreamSettings(host, initialized);
     return { status: 'applied' };
   },
 };

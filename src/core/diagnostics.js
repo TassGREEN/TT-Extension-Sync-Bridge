@@ -46,6 +46,7 @@ function sanitizeProbe(value) {
     settingsPresent: value.settingsPresent === true,
     scriptTreePresent: value.scriptTreePresent === true,
     tree,
+    globalScriptCount: Number.isInteger(value.globalScriptCount) ? value.globalScriptCount : null,
     foundTargetIds: stringArray(value.foundTargetIds),
     missingTargetIds: stringArray(value.missingTargetIds),
     sourceVersion: typeof value.sourceVersion === 'string' ? redactText(value.sourceVersion) : null,
@@ -59,9 +60,7 @@ function sanitizeProbe(value) {
 }
 
 function sanitizeRuntimeDiagnostics(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    return { tavernHelperTimeline: [] };
-  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { tavernHelperTimeline: [] };
   const timeline = Array.isArray(value.tavernHelperTimeline)
     ? value.tavernHelperTimeline.slice(-64).map(item => ({
         at: typeof item?.at === 'string' ? redactText(item.at) : null,
@@ -76,15 +75,30 @@ function sanitizeRuntimeDiagnostics(value) {
   return { tavernHelperTimeline: timeline };
 }
 
+function fullTreeScriptIds(trees) {
+  if (!Array.isArray(trees)) return [];
+  return trees.flatMap(entry => {
+    if (entry?.type === 'script') return typeof entry.id === 'string' ? [entry.id] : [];
+    if (entry?.type === 'folder' && Array.isArray(entry.scripts)) {
+      return entry.scripts.flatMap(script => script?.type === 'script' && typeof script.id === 'string' ? [script.id] : []);
+    }
+    return [];
+  });
+}
+
 function snapshotPayloadSummary(adapterId, snapshot) {
   if (adapterId !== 'tavern-helper-global-scripts') return null;
   const records = Array.isArray(snapshot?.payload?.records) ? snapshot.payload.records : null;
-  if (records === null) {
-    return { recordCount: null, targetScriptIds: [] };
+  if (records !== null) {
+    return {
+      recordCount: records.length,
+      targetScriptIds: stringArray(records.map(item => item?.record?.id)),
+    };
   }
+  const ids = fullTreeScriptIds(snapshot?.payload?.trees);
   return {
-    recordCount: records.length,
-    targetScriptIds: stringArray(records.map(item => item?.record?.id)),
+    recordCount: Array.isArray(snapshot?.payload?.trees) ? ids.length : null,
+    targetScriptIds: stringArray(ids),
   };
 }
 
